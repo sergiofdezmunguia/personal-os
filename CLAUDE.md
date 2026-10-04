@@ -25,16 +25,17 @@ uv run pos --help                     # CLI
 
 ```
 cli/ mcp_server/   interfaces (CLI `pos`, servidor MCP `pos-mcp`); sin lógica de negocio
+ops/          operación: `doctor` (diagnóstico, solo lectura) y `drill` (simulacro de restore)
 bootstrap.py  composition root: conecta todo (solo lo importan las interfaces)
 adapters/     comunicación con proveedores (apple/: buzón Recordatorios, CalDAV, iCalendar)
 sync/         ports (interfaces + DTOs), motores de sync, enlaces, auditoría de operaciones
 tasks/ calendar/   dominio; módulos hermanos independientes
-core/         db+migraciones, ids, reloj, eventos, config, secretos, rrule
+core/         db+migraciones, backups, ids, reloj, eventos, config, secretos, rrule
 bridge/scriptable/ ejecutor en el iPhone (JS); docs/protocol-reminders-v1.md es el contrato
 ```
 
 Reglas impuestas por `lint-imports`:
-- Capas: `(cli | mcp_server) → bootstrap → adapters → sync → (tasks | calendar) → core`.
+- Capas: `(cli | mcp_server) → ops → bootstrap → adapters → sync → (tasks | calendar) → core`.
 - `tasks` y `calendar` no se importan entre sí.
 - `adapters` no importa el dominio: solo `sync.ports` y `core`.
 
@@ -52,8 +53,10 @@ Reglas impuestas por `lint-imports`:
   Instantes en UTC ISO con `Z`. Nunca `datetime.now()` directo: usar `Clock`.
 - Ids con prefijo + ULID (`tsk_`, `occ_`, `evt_`, `op_`, `bat_`). El UID iCalendar de
   nuestros eventos es `<evt_id>@personal-os`; el marcador de Recordatorios es `[pos:<occ_id>]`.
-- **El PC nunca borra en el buzón de iCloud Drive** (iCloud para Windows no lo permite): se
-  registran procesados en `sync_inbox_processed`; la limpieza la hace el bridge.
+- **El PC nunca borra en el buzón de iCloud Drive**: se registran procesados en
+  `sync_inbox_processed`; la limpieza la hace el bridge. (Borrar en iCloud Drive sí funciona
+  desde que se corrigió el perfil de Windows, y los backups externos lo necesitan; las rutas
+  deben ser las reales, `/mnt/c/Users/PULSE/…`.)
 
 ## MCP y hooks
 
@@ -65,6 +68,16 @@ Reglas impuestas por `lint-imports`:
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
   `format_python.py` (ruff tras cada edición), `check_on_stop.py` (`scripts/check.sh` al
   terminar si hay cambios sin verificar).
+
+## Operación
+
+- `uv run pos doctor` antes de investigar cualquier problema: dice qué falla y cómo arreglarlo.
+- Backups: `pos sync` hace uno diario y sube una copia cifrada (age) a iCloud Drive;
+  `pos backup create|list|verify|drill|restore|prune|offsite|fetch|keygen`.
+  Nunca leer ni mostrar `backup-identity.txt` (clave privada).
+  Antes de una migración o cambio arriesgado: `pos backup create --label antes-de-…`.
+- Procedimiento completo: `docs/runbooks/backup-restore.md`.
+- Nunca restaurar sin `pos backup drill` previo ni sin que el usuario lo pida.
 
 ## Secretos y datos
 

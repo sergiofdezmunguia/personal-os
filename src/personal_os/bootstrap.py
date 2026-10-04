@@ -8,7 +8,7 @@ from __future__ import annotations
 import fcntl
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from personal_os.core.clock import Clock, SystemClock
@@ -148,19 +148,74 @@ def calendar_sync(application: App):
     )
 
 
-def run_sync(application: App, *, only: str | None = None, push: bool = True) -> list:
-    """Sincroniza Recordatorios y (si está configurado) Calendario. Devuelve los informes."""
+@dataclass
+class SyncOutcome:
+    reports: list
+    backup: object | None = None  # BackupInfo si se hizo backup automático
+    offsite: object | None = None  # BackupInfo si se subió una copia cifrada
+    backup_warnings: list[str] = field(default_factory=list)
+
+
+def auto_backup(application: App) -> tuple[object | None, object | None, list[str]]:
+    """Backup diario automático (si está activado y el último tiene > 24 h) + poda, y copia
+    cifrada fuera de este disco si está configurada. Nunca interrumpe la sync: avisa."""
+    from personal_os.core import backup as bk
+
+    cfg = application.config
+    if not cfg.backup.auto_daily or not cfg.db_path.exists():
+        return None, None, []
+    info, warnings = None, []
+    if bk.needs_auto_backup(cfg.backup_dir, application.clock):
+        try:
+            info = bk.create_backup(cfg.db_path, cfg.backup_dir, application.clock)
+            _, pruned = bk.prune(
+                cfg.backup_dir,
+                keep_daily=cfg.backup.keep_daily,
+                keep_weekly=cfg.backup.keep_weekly,
+                keep_monthly=cfg.backup.keep_monthly,
+            )
+            warnings += pruned
+        except (bk.BackupError, OSError) as exc:
+            warnings.append(f"Backup automático fallido: {exc}")
+    pushed, offsite_warnings = sync_offsite(cfg)
+    return info, pushed, warnings + offsite_warnings
+
+
+def sync_offsite(cfg: Config) -> tuple[object | None, list[str]]:
+    """Sube el último backup local cifrado si falta fuera y poda allí. (None, []) si no está
+    configurado."""
+    from personal_os.core import offsite
+
+    if not cfg.backup.offsite_enabled:
+        return None, []
+    try:
+        result = offsite.sync(
+            cfg.backup_dir,
+            cfg.backup.offsite_dir,
+            offsite.parse_recipient(cfg.backup.offsite_recipient),
+            keep_daily=cfg.backup.keep_daily,
+            keep_weekly=cfg.backup.keep_weekly,
+            keep_monthly=cfg.backup.keep_monthly,
+        )
+    except (offsite.OffsiteError, OSError) as exc:
+        return None, [f"Copia externa fallida: {exc}"]
+    return result.pushed, result.warnings
+
+
+def run_sync(application: App, *, only: str | None = None, push: bool = True) -> SyncOutcome:
+    """Backup diario si toca, y sincroniza Recordatorios y (si está configurado) Calendario."""
     if only not in (None, "reminders", "calendar"):
         raise ValueError("only debe ser 'reminders', 'calendar' o None")
-    reports = []
+    outcome = SyncOutcome(reports=[])
     with sync_lock(application.config):
+        outcome.backup, outcome.offsite, outcome.backup_warnings = auto_backup(application)
         if only in (None, "reminders"):
-            reports.append(reminders_sync(application).run(push=push))
+            outcome.reports.append(reminders_sync(application).run(push=push))
         if only in (None, "calendar"):
             if calendar_configured(application.config):
-                reports.append(calendar_sync(application).run(push=push))
+                outcome.reports.append(calendar_sync(application).run(push=push))
             elif only == "calendar":
                 raise ConfigError(
                     "Calendario no configurado (apple_id + `pos secrets set icloud_app_password`)"
                 )
-    return reports
+    return outcome

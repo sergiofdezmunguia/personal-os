@@ -114,6 +114,10 @@ class RemindersSync:
                 if snapshot is not None:
                     self._process_snapshot(ctx, snapshot, report)
                     self.cursors.set(PROVIDER, "snapshot_taken_at", snapshot.taken_at)
+                    # Para diagnóstico (`pos doctor`).
+                    self.cursors.set(PROVIDER, "bridge_version", snapshot.bridge_version or "")
+                    self.cursors.set(PROVIDER, "device_timezone", snapshot.device_timezone or "")
+                    self.cursors.set(PROVIDER, "list_found", "1" if snapshot.list_found else "0")
             if push:
                 with self.db.transaction():
                     self._push(ChangeContext.system(run_id), report)
