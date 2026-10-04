@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import typer
 
 from personal_os import bootstrap as wiring
-from personal_os.cli import event_cmds, task_cmds
+from personal_os.cli import event_cmds, ops_cmds, task_cmds
 from personal_os.cli.output import echo_json as _echo_json
 from personal_os.cli.output import fail
 from personal_os.core import secrets as secrets_mod
@@ -27,6 +27,8 @@ bridge_app = typer.Typer(
 sync_app = typer.Typer(help="Sincronización con Apple.", invoke_without_command=True)
 app.add_typer(task_cmds.app, name="task")
 app.add_typer(event_cmds.app, name="event")
+app.add_typer(ops_cmds.backup_app, name="backup")
+app.command("doctor")(ops_cmds.doctor)
 app.add_typer(sync_app, name="sync")
 app.add_typer(secrets_app, name="secrets")
 app.add_typer(bridge_app, name="bridge")
@@ -189,9 +191,14 @@ def sync_run(
         return
     application = wiring.open_app()
     try:
-        reports = wiring.run_sync(application, only=only, push=not no_push)
+        outcome = wiring.run_sync(application, only=only, push=not no_push)
     except (ValueError, ConfigError, RuntimeError) as exc:
         fail(str(exc))
+    reports = outcome.reports
+    if outcome.backup is not None and not as_json:
+        typer.echo(f"[backup] {outcome.backup.path.name}")
+    for w in outcome.backup_warnings:
+        typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
     if as_json:
         _echo_json(reports)
         return

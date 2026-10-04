@@ -75,6 +75,7 @@ def decode_snapshot(data: dict) -> RemindersSnapshot:
         device_timezone=data.get("device_timezone"),
         window_days=int(data.get("window_days", 0)),
         applied_batches=tuple(data.get("applied_batches", [])),
+        bridge_version=data.get("bridge_version"),
         reminders=tuple(
             ObservedReminder(
                 external_id=r["external_id"],

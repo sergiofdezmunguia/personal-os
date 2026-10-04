@@ -194,7 +194,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         """Sincroniza con Apple: envía cambios y recibe lo hecho en el iPhone (tareas
         completadas, ediciones, borrados, recordatorios/eventos creados a mano)."""
         try:
-            reports = bootstrap.run_sync(open_app(), only=only)
+            outcome = bootstrap.run_sync(open_app(), only=only)
         except (ConfigError, RuntimeError, ValueError) as exc:
             raise ToolError(str(exc)) from exc
         return {
@@ -205,8 +205,10 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                     "warnings": r.warnings,
                     "errors": r.errors,
                 }
-                for r in reports
+                for r in outcome.reports
             ],
+            "backup": outcome.backup.path.name if outcome.backup else None,
+            "backup_warnings": outcome.backup_warnings,
             "note": "Los cambios en Recordatorios llegan al iPhone cuando se ejecute su bridge.",
         }
 

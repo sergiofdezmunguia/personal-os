@@ -116,6 +116,7 @@ class RemindersSnapshot:
     window_days: int
     applied_batches: tuple[str, ...]
     reminders: tuple[ObservedReminder, ...]
+    bridge_version: str | None = None
 
 
 @dataclass(frozen=True)
