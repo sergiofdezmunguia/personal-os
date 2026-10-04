@@ -24,7 +24,8 @@ uv run pos --help                     # CLI
 ## Arquitectura (no mezclar responsabilidades)
 
 ```
-cli/          interfaz de desarrollo; composition root en cli/wiring.py
+cli/ mcp_server/   interfaces (CLI `pos`, servidor MCP `pos-mcp`); sin lógica de negocio
+bootstrap.py  composition root: conecta todo (solo lo importan las interfaces)
 adapters/     comunicación con proveedores (apple/: buzón Recordatorios, CalDAV, iCalendar)
 sync/         ports (interfaces + DTOs), motores de sync, enlaces, auditoría de operaciones
 tasks/ calendar/   dominio; módulos hermanos independientes
@@ -33,7 +34,7 @@ bridge/scriptable/ ejecutor en el iPhone (JS); docs/protocol-reminders-v1.md es 
 ```
 
 Reglas impuestas por `lint-imports`:
-- Capas: `cli → adapters → sync → (tasks | calendar) → core`. Nunca hacia arriba.
+- Capas: `(cli | mcp_server) → bootstrap → adapters → sync → (tasks | calendar) → core`.
 - `tasks` y `calendar` no se importan entre sí.
 - `adapters` no importa el dominio: solo `sync.ports` y `core`.
 
@@ -53,6 +54,17 @@ Reglas impuestas por `lint-imports`:
   nuestros eventos es `<evt_id>@personal-os`; el marcador de Recordatorios es `[pos:<occ_id>]`.
 - **El PC nunca borra en el buzón de iCloud Drive** (iCloud para Windows no lo permite): se
   registran procesados en `sync_inbox_processed`; la limpieza la hace el bridge.
+
+## MCP y hooks
+
+- `.mcp.json` registra `personal-os` (`uv run pos-mcp`). Herramientas: `create_task`,
+  `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
+  `sync_apple`. Actor de auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las
+  existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
+- `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
+  `guard.py` (bloquea secretos, push a main, force-push, commits en main),
+  `format_python.py` (ruff tras cada edición), `check_on_stop.py` (`scripts/check.sh` al
+  terminar si hay cambios sin verificar).
 
 ## Secretos y datos
 

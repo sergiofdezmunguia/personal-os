@@ -9,10 +9,12 @@ dependencies = [
     "httpx>=0.27",
     "icalendar>=6.0",
     "python-dateutil>=2.9",
+    "mcp>=1.10",
 ]
 
 [project.scripts]
 pos = "personal_os.cli.main:app"
+pos-mcp = "personal_os.mcp_server.server:main"
 
 [dependency-groups]
 dev = [
@@ -51,10 +53,11 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]  # E501: lo gestiona `ruff forma
 root_package = "personal_os"
 
 [[tool.importlinter.contracts]]
-name = "Capas: cli -> adapters -> sync -> dominio -> core"
+name = "Capas: interfaces (cli | mcp) -> bootstrap -> adapters -> sync -> dominio -> core"
 type = "layers"
 layers = [
-    "personal_os.cli",
+    "personal_os.cli | personal_os.mcp_server",
+    "personal_os.bootstrap",
     "personal_os.adapters",
     "personal_os.sync",
     "personal_os.tasks | personal_os.calendar",

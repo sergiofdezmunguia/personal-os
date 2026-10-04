@@ -25,6 +25,13 @@ uv run pos ops                                    # qué se ha enviado a Apple y
 
 Los ids aceptan prefijo único (`pos task done tsk_01M43`).
 
+### Con Claude (MCP)
+
+Al abrir Claude Code en este repo se ofrece el servidor MCP `personal-os` (`.mcp.json`).
+Puedes pedir, por ejemplo: *"recuérdame sacar el reciclaje todos los lunes a las 20:00"* o
+*"pon el dentista el martes a las 18:00 con aviso una hora antes"*. Claude usa las mismas
+reglas y servicios que la CLI; lo que crea queda auditado con actor `mcp`.
+
 ## Documentación
 
 - `CLAUDE.md` — reglas del proyecto (arquitectura, invariantes, comandos).
