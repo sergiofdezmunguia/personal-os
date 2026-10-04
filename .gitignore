@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+*.egg-info/
+dist/
+build/
+
+# Datos y secretos locales: NUNCA en el repo (viven en ~/.config y ~/.local/share)
+*.db
+*.db-wal
+*.db-shm
+secrets.toml
+.env
+.env.*
+
+# Node
+node_modules/
