@@ -10,11 +10,12 @@ from zoneinfo import ZoneInfo
 
 import typer
 
-from personal_os.cli import event_cmds, task_cmds, wiring
+from personal_os import bootstrap as wiring
+from personal_os.cli import event_cmds, task_cmds
 from personal_os.cli.output import echo_json as _echo_json
 from personal_os.cli.output import fail
 from personal_os.core import secrets as secrets_mod
-from personal_os.core.config import load_config, write_config_template
+from personal_os.core.config import ConfigError, load_config, write_config_template
 from personal_os.core.ids import new_id, ulid
 from personal_os.sync.ports import Due, ReminderDelete, ReminderState, ReminderUpsert
 
@@ -187,14 +188,10 @@ def sync_run(
     if ctx.invoked_subcommand is not None:
         return
     application = wiring.open_app()
-    reports = []
-    with wiring.sync_lock(application.config):
-        if only in (None, "reminders"):
-            reports.append(wiring.reminders_sync(application).run(push=not no_push))
-        if only in (None, "calendar") and wiring.calendar_configured(application.config):
-            reports.append(wiring.calendar_sync(application).run(push=not no_push))
-        elif only == "calendar":
-            fail("Calendario no configurado (apple_id + `pos secrets set icloud_app_password`)")
+    try:
+        reports = wiring.run_sync(application, only=only, push=not no_push)
+    except (ValueError, ConfigError, RuntimeError) as exc:
+        fail(str(exc))
     if as_json:
         _echo_json(reports)
         return

@@ -6,7 +6,7 @@ import dataclasses
 
 import typer
 
-from personal_os.cli import wiring
+from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
 from personal_os.cli.parsing import parse_date, parse_time
 from personal_os.core.events import ChangeContext

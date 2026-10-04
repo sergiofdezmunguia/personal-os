@@ -1,4 +1,7 @@
-"""Composition root: el único sitio que conoce todas las piezas y las conecta."""
+"""Composition root: el único sitio que conoce todas las piezas y las conecta.
+
+Lo usan las interfaces (CLI, MCP). Ninguna otra capa lo importa.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ MIGRATIONS = [
 ]
 
 BRIDGE_SOURCE = (
-    Path(__file__).resolve().parents[3] / "bridge" / "scriptable" / "personal-os-sync.js"
+    Path(__file__).resolve().parents[2] / "bridge" / "scriptable" / "personal-os-sync.js"
 )
 BRIDGE_SCRIPT_NAME = "Personal OS Sync.js"
 
@@ -143,3 +146,21 @@ def calendar_sync(application: App):
         calendar_gateway(application.config),
         application.config.timezone,
     )
+
+
+def run_sync(application: App, *, only: str | None = None, push: bool = True) -> list:
+    """Sincroniza Recordatorios y (si está configurado) Calendario. Devuelve los informes."""
+    if only not in (None, "reminders", "calendar"):
+        raise ValueError("only debe ser 'reminders', 'calendar' o None")
+    reports = []
+    with sync_lock(application.config):
+        if only in (None, "reminders"):
+            reports.append(reminders_sync(application).run(push=push))
+        if only in (None, "calendar"):
+            if calendar_configured(application.config):
+                reports.append(calendar_sync(application).run(push=push))
+            elif only == "calendar":
+                raise ConfigError(
+                    "Calendario no configurado (apple_id + `pos secrets set icloud_app_password`)"
+                )
+    return reports

@@ -15,7 +15,7 @@ from personal_os.core.clock import Clock, to_iso
 from personal_os.core.db import Database
 from personal_os.core.ids import new_id
 
-ACTORS = ("cli", "apple", "system")
+ACTORS = ("cli", "mcp", "apple", "system")
 
 
 @dataclass(frozen=True)

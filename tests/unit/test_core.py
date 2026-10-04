@@ -19,7 +19,7 @@ def test_ids_are_prefixed_sortable_and_valid():
 
 
 def test_migrations_are_idempotent(tmp_path):
-    from personal_os.cli.wiring import MIGRATIONS
+    from personal_os.bootstrap import MIGRATIONS
 
     db = Database(tmp_path / "x.db")
     first = db.migrate(MIGRATIONS)

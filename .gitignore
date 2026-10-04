@@ -19,3 +19,7 @@ secrets.toml
 
 # Node
 node_modules/
+
+# Claude Code (local)
+.claude/settings.local.json
+.claude/.last_check
