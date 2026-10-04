@@ -197,17 +197,17 @@ def test_needs_auto_backup(tmp_path, clock):
 
 
 def test_auto_backup_runs_once_per_day(app, clock):
-    first, _ = bootstrap.auto_backup(app)
-    second, _ = bootstrap.auto_backup(app)
+    first, _, _ = bootstrap.auto_backup(app)
+    second, _, _ = bootstrap.auto_backup(app)
     assert first is not None and second is None
     clock.advance(hours=25)
-    third, _ = bootstrap.auto_backup(app)
+    third, _, _ = bootstrap.auto_backup(app)
     assert third is not None
 
 
 def test_auto_backup_can_be_disabled(app):
     app.config = replace(app.config, backup=replace(app.config.backup, auto_daily=False))
-    assert bootstrap.auto_backup(app) == (None, [])
+    assert bootstrap.auto_backup(app) == (None, None, [])
 
 
 def test_drill_restores_and_reads_with_domain_services(app):

@@ -53,8 +53,10 @@ Reglas impuestas por `lint-imports`:
   Instantes en UTC ISO con `Z`. Nunca `datetime.now()` directo: usar `Clock`.
 - Ids con prefijo + ULID (`tsk_`, `occ_`, `evt_`, `op_`, `bat_`). El UID iCalendar de
   nuestros eventos es `<evt_id>@personal-os`; el marcador de Recordatorios es `[pos:<occ_id>]`.
-- **El PC nunca borra en el buzón de iCloud Drive** (iCloud para Windows no lo permite): se
-  registran procesados en `sync_inbox_processed`; la limpieza la hace el bridge.
+- **El PC nunca borra en el buzón de iCloud Drive**: se registran procesados en
+  `sync_inbox_processed`; la limpieza la hace el bridge. (Borrar en iCloud Drive sí funciona
+  desde que se corrigió el perfil de Windows, y los backups externos lo necesitan; las rutas
+  deben ser las reales, `/mnt/c/Users/PULSE/…`.)
 
 ## MCP y hooks
 
@@ -70,7 +72,9 @@ Reglas impuestas por `lint-imports`:
 ## Operación
 
 - `uv run pos doctor` antes de investigar cualquier problema: dice qué falla y cómo arreglarlo.
-- Backups: `pos sync` hace uno diario; `pos backup create|list|verify|drill|restore|prune`.
+- Backups: `pos sync` hace uno diario y sube una copia cifrada (age) a iCloud Drive;
+  `pos backup create|list|verify|drill|restore|prune|offsite|fetch|keygen`.
+  Nunca leer ni mostrar `backup-identity.txt` (clave privada).
   Antes de una migración o cambio arriesgado: `pos backup create --label antes-de-…`.
 - Procedimiento completo: `docs/runbooks/backup-restore.md`.
 - Nunca restaurar sin `pos backup drill` previo ni sin que el usuario lo pida.

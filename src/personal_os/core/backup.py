@@ -5,6 +5,8 @@
   filas por tabla, migraciones). Se verifica tras escribirse en el destino.
 - Restaurar: verifica, guarda una copia `pre-restore` del estado actual, elimina WAL/SHM
   obsoletos, sustituye de forma atómica y migra hacia delante.
+- Copia fuera de este disco: el mismo `.db.gz` cifrado con age (`.db.gz.age`) junto a su
+  manifiesto; ver `core/offsite.py`. Listar, podar y verificar funcionan igual sobre ambos.
 """
 
 from __future__ import annotations
@@ -27,7 +29,8 @@ from personal_os.core.clock import Clock, to_iso
 from personal_os.core.db import Database
 
 FORMAT = "pos-backup/1"
-_NAME_RE = re.compile(r"^pos-(\d{8}T\d{6}Z)(?:-(\d+))?(?:-([a-z][a-z-]*))?\.db\.gz$")
+_NAME_RE = re.compile(r"^pos-(\d{8}T\d{6}Z)(?:-(\d+))?(?:-([a-z][a-z-]*))?\.db\.gz(?:\.age)?$")
+ENCRYPTED_SUFFIX = ".age"
 PRE_RESTORE = "pre-restore"
 KEEP_PRE_RESTORE = 5
 
@@ -54,6 +57,10 @@ class BackupInfo:
     def manifest_path(self) -> Path:
         return _manifest_path(self.path)
 
+    @property
+    def encrypted(self) -> bool:
+        return self.path.name.endswith(ENCRYPTED_SUFFIX)
+
 
 @dataclass
 class VerifyResult:
@@ -74,7 +81,7 @@ class RestoreResult:
 
 
 def _manifest_path(gz: Path) -> Path:
-    return gz.with_name(gz.name.removesuffix(".db.gz") + ".json")
+    return gz.with_name(gz.name.removesuffix(ENCRYPTED_SUFFIX).removesuffix(".db.gz") + ".json")
 
 
 def inspect_db(path: Path) -> DbStats:
@@ -231,12 +238,13 @@ def resolve_backup(dest_dir: Path, ref: str) -> BackupInfo:
     return matches[0]
 
 
-def _decompress(info: BackupInfo, dest: Path) -> None:
-    with gzip.open(info.path, "rb") as fin, dest.open("wb") as fout:
+def _decompress(src: Path, dest: Path) -> None:
+    with gzip.open(src, "rb") as fin, dest.open("wb") as fout:
         shutil.copyfileobj(fin, fout)
 
 
-def verify_backup(info: BackupInfo) -> VerifyResult:
+def verify_backup(info: BackupInfo, identity: object | None = None) -> VerifyResult:
+    """Verifica un backup. Si está cifrado hace falta `identity` (pyrage x25519.Identity)."""
     result = VerifyResult(backup=info)
     if info.manifest is None:
         result.problems.append("sin manifiesto (.json) o ilegible")
@@ -246,8 +254,21 @@ def verify_backup(info: BackupInfo) -> VerifyResult:
         return result
     with tempfile.TemporaryDirectory(prefix="pos-verify-") as tmp:
         raw = Path(tmp) / "pos.db"
+        gz = info.path
+        if info.encrypted:
+            if identity is None:
+                result.problems.append("cifrado: hace falta la clave age para verificarlo")
+                return result
+            import pyrage
+
+            gz = Path(tmp) / "backup.db.gz"
+            try:
+                gz.write_bytes(pyrage.decrypt(info.path.read_bytes(), [identity]))
+            except (OSError, pyrage.DecryptError) as exc:
+                result.problems.append(f"no se puede descifrar: {exc}")
+                return result
         try:
-            _decompress(info, raw)
+            _decompress(gz, raw)
         except (OSError, EOFError, gzip.BadGzipFile) as exc:
             result.problems.append(f"no se puede descomprimir: {exc}")
             return result
@@ -337,8 +358,10 @@ def needs_auto_backup(
 def restore_into(info: BackupInfo, target: Path) -> None:
     """Escribe el contenido del backup en `target` (atómico; elimina WAL/SHM obsoletos)."""
     target.parent.mkdir(parents=True, exist_ok=True)
+    if info.encrypted:
+        raise BackupError("Backup cifrado: descífralo antes con `pos backup fetch`")
     tmp = target.with_name(target.name + ".restore.tmp")
-    _decompress(info, tmp)
+    _decompress(info.path, tmp)
     with tmp.open("rb") as fh:
         os.fsync(fh.fileno())
     # Un -wal antiguo se aplicaría sobre la base restaurada y la corrompería.

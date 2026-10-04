@@ -197,6 +197,8 @@ def sync_run(
     reports = outcome.reports
     if outcome.backup is not None and not as_json:
         typer.echo(f"[backup] {outcome.backup.path.name}")
+    if outcome.offsite is not None and not as_json:
+        typer.echo(f"[backup] copia cifrada fuera: {outcome.offsite.path.name}")
     for w in outcome.backup_warnings:
         typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
     if as_json:

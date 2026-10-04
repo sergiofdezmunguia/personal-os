@@ -152,29 +152,54 @@ def calendar_sync(application: App):
 class SyncOutcome:
     reports: list
     backup: object | None = None  # BackupInfo si se hizo backup automático
+    offsite: object | None = None  # BackupInfo si se subió una copia cifrada
     backup_warnings: list[str] = field(default_factory=list)
 
 
-def auto_backup(application: App) -> tuple[object | None, list[str]]:
-    """Backup diario automático (si está activado y el último tiene > 24 h) + poda."""
+def auto_backup(application: App) -> tuple[object | None, object | None, list[str]]:
+    """Backup diario automático (si está activado y el último tiene > 24 h) + poda, y copia
+    cifrada fuera de este disco si está configurada. Nunca interrumpe la sync: avisa."""
     from personal_os.core import backup as bk
 
     cfg = application.config
     if not cfg.backup.auto_daily or not cfg.db_path.exists():
-        return None, []
-    if not bk.needs_auto_backup(cfg.backup_dir, application.clock):
+        return None, None, []
+    info, warnings = None, []
+    if bk.needs_auto_backup(cfg.backup_dir, application.clock):
+        try:
+            info = bk.create_backup(cfg.db_path, cfg.backup_dir, application.clock)
+            _, pruned = bk.prune(
+                cfg.backup_dir,
+                keep_daily=cfg.backup.keep_daily,
+                keep_weekly=cfg.backup.keep_weekly,
+                keep_monthly=cfg.backup.keep_monthly,
+            )
+            warnings += pruned
+        except (bk.BackupError, OSError) as exc:
+            warnings.append(f"Backup automático fallido: {exc}")
+    pushed, offsite_warnings = sync_offsite(cfg)
+    return info, pushed, warnings + offsite_warnings
+
+
+def sync_offsite(cfg: Config) -> tuple[object | None, list[str]]:
+    """Sube el último backup local cifrado si falta fuera y poda allí. (None, []) si no está
+    configurado."""
+    from personal_os.core import offsite
+
+    if not cfg.backup.offsite_enabled:
         return None, []
     try:
-        info = bk.create_backup(cfg.db_path, cfg.backup_dir, application.clock)
-        _, warnings = bk.prune(
+        result = offsite.sync(
             cfg.backup_dir,
+            cfg.backup.offsite_dir,
+            offsite.parse_recipient(cfg.backup.offsite_recipient),
             keep_daily=cfg.backup.keep_daily,
             keep_weekly=cfg.backup.keep_weekly,
             keep_monthly=cfg.backup.keep_monthly,
         )
-        return info, warnings
-    except (bk.BackupError, OSError) as exc:
-        return None, [f"Backup automático fallido: {exc}"]
+    except (offsite.OffsiteError, OSError) as exc:
+        return None, [f"Copia externa fallida: {exc}"]
+    return result.pushed, result.warnings
 
 
 def run_sync(application: App, *, only: str | None = None, push: bool = True) -> SyncOutcome:
@@ -183,7 +208,7 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
         raise ValueError("only debe ser 'reminders', 'calendar' o None")
     outcome = SyncOutcome(reports=[])
     with sync_lock(application.config):
-        outcome.backup, outcome.backup_warnings = auto_backup(application)
+        outcome.backup, outcome.offsite, outcome.backup_warnings = auto_backup(application)
         if only in (None, "reminders"):
             outcome.reports.append(reminders_sync(application).run(push=push))
         if only in (None, "calendar"):

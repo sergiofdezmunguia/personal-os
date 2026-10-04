@@ -43,6 +43,14 @@ class BackupConfig:
     keep_daily: int = 14
     keep_weekly: int = 8
     keep_monthly: int = 12
+    # Copia cifrada fuera de este disco (core/offsite.py). Ambos o ninguno.
+    offsite_dir: Path | None = None
+    offsite_recipient: str | None = None  # clave pública age (no es secreta)
+    offsite_identity: Path | None = None  # None ⇒ <config_dir>/backup-identity.txt
+
+    @property
+    def offsite_enabled(self) -> bool:
+        return self.offsite_dir is not None
 
 
 @dataclass(frozen=True)
@@ -60,6 +68,10 @@ class Config:
     @property
     def backup_dir(self) -> Path:
         return self.backup.dir or (self.data_dir / "backups")
+
+    @property
+    def offsite_identity_path(self) -> Path:
+        return self.backup.offsite_identity or (self.config_dir / "backup-identity.txt")
 
     @property
     def config_file(self) -> Path:
@@ -106,11 +118,24 @@ def load_config() -> Config:
             keep_daily=int(b.get("keep_daily", 14)),
             keep_weekly=int(b.get("keep_weekly", 8)),
             keep_monthly=int(b.get("keep_monthly", 12)),
+            offsite_dir=Path(b["offsite_dir"]).expanduser() if b.get("offsite_dir") else None,
+            offsite_recipient=b.get("offsite_recipient") or None,
+            offsite_identity=(
+                Path(b["offsite_identity"]).expanduser() if b.get("offsite_identity") else None
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Sección [backup] inválida en {path}: {exc}") from exc
     if min(backup.keep_daily, backup.keep_weekly, backup.keep_monthly) < 0 or backup.keep_daily < 1:
         raise ConfigError("[backup] keep_daily debe ser >= 1 y el resto >= 0")
+    if (backup.offsite_dir is None) != (backup.offsite_recipient is None):
+        raise ConfigError(
+            "[backup] offsite_dir y offsite_recipient van juntos (ver `pos backup keygen`)"
+        )
+    if backup.offsite_dir is not None:
+        local = backup.dir or (ddir / "backups")
+        if backup.offsite_dir.absolute() == local.absolute():
+            raise ConfigError("[backup] offsite_dir no puede ser el mismo directorio que dir")
     return Config(timezone=tz, apple=apple, backup=backup, config_dir=cdir, data_dir=ddir)
 
 
@@ -127,8 +152,12 @@ calendar_name = "Personal OS"
 # mailbox_dir = "/mnt/c/Users/<usuario>/iCloudDrive/iCloud~dk~simonbs~Scriptable/personal-os"
 
 [backup]
-# Por defecto en <data_dir>/backups. Mejor fuera de este disco (p. ej. OneDrive).
-# dir = "/mnt/c/Users/<usuario>/OneDrive/personal-os-backups"
+# Backups locales; por defecto en <data_dir>/backups.
+# dir = "/ruta/a/backups"
+# Copia cifrada (age) fuera de este disco. Genera la clave con `pos backup keygen`.
+# Usa la ruta REAL de la carpeta (sin enlaces simbólicos) o iCloud/OneDrive no dejarán borrar.
+# offsite_dir = "/mnt/c/Users/<usuario>/iCloudDrive/PersonalOS-backups"
+# offsite_recipient = "age1…"
 auto_daily = true      # backup automático en `pos sync` si el último tiene más de 24 h
 keep_daily = 14
 keep_weekly = 8

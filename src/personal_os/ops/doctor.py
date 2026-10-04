@@ -15,6 +15,7 @@ from pathlib import Path
 
 from personal_os import bootstrap
 from personal_os.core import backup as bk
+from personal_os.core import offsite
 from personal_os.core import secrets as secrets_mod
 from personal_os.core.clock import Clock, SystemClock, from_iso
 from personal_os.core.config import Config, ConfigError, load_config
@@ -161,19 +162,106 @@ def check_backups(cfg: Config, clock: Clock) -> list[Check]:
         same_place = cfg.backup_dir.resolve().is_relative_to(cfg.data_dir.resolve())
     except OSError:
         same_place = False
-    if same_place:
+    if same_place and not cfg.backup.offsite_enabled:
         out.append(
             Check(
                 "backups",
                 WARN,
                 "Los backups están en el mismo disco que la base de datos",
-                "Configura [backup].dir fuera de este disco (p. ej. OneDrive). Ver docs/runbooks/backup-restore.md",
+                "Configura la copia externa cifrada: `uv run pos backup keygen`. Ver docs/runbooks/backup-restore.md",
             )
         )
     if not cfg.backup.auto_daily:
         out.append(
             Check("backups", WARN, "Backup automático desactivado ([backup].auto_daily = false)")
         )
+    return out
+
+
+def check_offsite(cfg: Config, clock: Clock) -> list[Check]:
+    if not cfg.backup.offsite_enabled:
+        return [Check("offsite", SKIP, "Copia externa cifrada no configurada")]
+    out: list[Check] = []
+    dest = cfg.backup.offsite_dir
+    try:
+        recipient = offsite.parse_recipient(cfg.backup.offsite_recipient)
+    except offsite.OffsiteError as exc:
+        return [Check("offsite", FAIL, str(exc), "Revisa [backup].offsite_recipient")]
+    if not dest.is_dir():
+        return [
+            Check(
+                "offsite",
+                FAIL,
+                f"Destino externo no accesible: {dest}",
+                "¿Está iCloud para Windows abierto y la carpeta creada? (mkdir la primera vez)",
+            )
+        ]
+    if dest.resolve() != dest.absolute():
+        out.append(
+            Check(
+                "offsite",
+                WARN,
+                f"La ruta pasa por un enlace simbólico ({dest} → {dest.resolve()})",
+                "Usa la ruta real: iCloud/OneDrive rechazan los borrados por la ruta del enlace "
+                "(ver docs/investigations/2026-10-04-icloud-drive-backups.md)",
+            )
+        )
+    identity = None
+    try:
+        identity = offsite.load_identity(cfg.offsite_identity_path)
+    except offsite.OffsiteError as exc:
+        missing = not cfg.offsite_identity_path.exists()
+        out.append(
+            Check(
+                "offsite",
+                WARN if missing else FAIL,
+                str(exc),
+                "Sin la clave privada no se puede verificar ni recuperar. Restáurala desde tu "
+                "gestor de contraseñas"
+                if missing
+                else "",
+            )
+        )
+    if identity is not None and not offsite.matches(identity, recipient):
+        return [
+            *out,
+            Check(
+                "offsite",
+                FAIL,
+                "La clave privada no corresponde a offsite_recipient",
+                "Los backups nuevos no se podrían descifrar con tu clave. Revisa la config",
+            ),
+        ]
+    remote = [b for b in bk.list_backups(dest) if b.label is None and b.encrypted]
+    if not remote:
+        return [
+            *out,
+            Check("offsite", WARN, f"No hay copias en {dest}", "uv run pos backup offsite"),
+        ]
+    last = remote[-1]
+    age = clock.now() - last.created_at
+    status = WARN if age > STALE_BACKUP else OK
+    out.append(
+        Check(
+            "offsite",
+            status,
+            f"{len(remote)} copias cifradas; la última hace {_fmt_age(age)} ({last.path.name})",
+            "uv run pos backup offsite" if status == WARN else "",
+        )
+    )
+    if identity is not None:
+        check = bk.verify_backup(last, identity)
+        if check.ok:
+            out.append(Check("offsite", OK, "La última copia externa se descifra y verifica"))
+        else:
+            out.append(
+                Check(
+                    "offsite",
+                    FAIL,
+                    f"La última copia externa NO se verifica: {'; '.join(check.problems)}",
+                    "uv run pos backup create",
+                )
+            )
     return out
 
 
@@ -396,6 +484,7 @@ def run_doctor(*, offline: bool = False, clock: Clock | None = None) -> list[Che
         ("secretos", lambda: check_secrets(cfg, clock)),
         ("base de datos", lambda: check_database(cfg, clock)),
         ("backups", lambda: check_backups(cfg, clock)),
+        ("offsite", lambda: check_offsite(cfg, clock)),
         ("buzón", lambda: check_mailbox(cfg, clock)),
         ("bridge", lambda: check_bridge(cfg, clock)),
         ("caldav", lambda: check_caldav(cfg, clock, offline=offline)),
