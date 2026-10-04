@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ def run(hook: Path, payload: dict) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         cwd=ROOT,
-        env={"CLAUDE_PROJECT_DIR": str(ROOT), "PATH": "/usr/bin:/bin"},
+        env={"CLAUDE_PROJECT_DIR": str(ROOT), "PATH": os.environ["PATH"]},
     )
 
 
