@@ -21,6 +21,8 @@ uv run pos event list | pos event edit <id> … | pos event cancel <id>
 uv run pos sync status                            # ejecuciones, buzón, enlaces con problemas
 uv run pos log                                    # auditoría de eventos de dominio
 uv run pos ops                                    # qué se ha enviado a Apple y con qué resultado
+uv run pos doctor                                 # diagnóstico completo con pistas de arreglo
+uv run pos backup list | create | drill | restore # ver docs/runbooks/backup-restore.md
 ```
 
 Los ids aceptan prefijo único (`pos task done tsk_01M43`).
@@ -39,6 +41,7 @@ reglas y servicios que la CLI; lo que crea queda auditado con actor `mcp`.
 - `docs/adr/` — decisiones (SQLite, bridge Apple, recurrencias, conflictos).
 - `docs/protocol-reminders-v1.md` — contrato PC ⇄ iPhone.
 - `docs/setup/iphone.md` — pasos manuales en iPhone y Windows.
+- `docs/runbooks/backup-restore.md` — backups y restauración.
 
 ## Tests
 

@@ -27,7 +27,7 @@ timezone = "Atlantic/Canary"          # debe coincidir con la del iPhone
 apple_id = "tu-apple-id@…"
 reminders_list = "Personal OS"
 calendar_name = "Personal OS"
-mailbox_dir = "/mnt/c/Users/sergio/iCloudDrive/iCloud~dk~simonbs~Scriptable/personal-os"
+mailbox_dir = "/mnt/c/Users/PULSE/iCloudDrive/iCloud~dk~simonbs~Scriptable/personal-os"
 ```
 
 Instalar/actualizar el bridge: `uv run pos bridge install` → script **Personal OS Sync**.

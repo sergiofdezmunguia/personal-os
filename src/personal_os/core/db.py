@@ -63,6 +63,27 @@ class Database:
 
     # --- migraciones -----------------------------------------------------------------
 
+    def _pending(self, namespaces: Sequence[tuple[str, str]]) -> list[tuple[str, str, str]]:
+        exists = self.one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        )
+        out = []
+        for namespace, package in namespaces:
+            done = set()
+            if exists:
+                done = {
+                    r["version"]
+                    for r in self.all(
+                        "SELECT version FROM schema_migrations WHERE namespace = ?", (namespace,)
+                    )
+                }
+            out += [(namespace, package, n) for n in _available(package) if int(n[:4]) not in done]
+        return out
+
+    def pending_migrations(self, namespaces: Sequence[tuple[str, str]]) -> list[str]:
+        """Migraciones disponibles aún no aplicadas (sin aplicarlas)."""
+        return [f"{ns}/{name}" for ns, _, name in self._pending(namespaces)]
+
     def migrate(self, namespaces: Sequence[tuple[str, str]]) -> list[str]:
         """Aplica migraciones pendientes. `namespaces` = [(nombre, paquete_con_migrations)]."""
         self._conn.execute(
@@ -72,31 +93,24 @@ class Database:
             " PRIMARY KEY (namespace, version))"
         )
         applied: list[str] = []
-        for namespace, package in namespaces:
-            done = {
-                r["version"]
-                for r in self.all(
-                    "SELECT version FROM schema_migrations WHERE namespace = ?", (namespace,)
-                )
-            }
+        for namespace, package, name in self._pending(namespaces):
             folder = resources.files(package).joinpath("migrations")
-            files = sorted(
-                (f.name for f in folder.iterdir() if _MIGRATION_RE.match(f.name)),
-            )
-            for name in files:
-                version = int(name[:4])
-                if version in done:
-                    continue
-                sql = folder.joinpath(name).read_text(encoding="utf-8")
-                with self.transaction():
-                    for statement in _split_sql(sql):
-                        self._conn.execute(statement)
-                    self._conn.execute(
-                        "INSERT INTO schema_migrations(namespace, version, name) VALUES (?,?,?)",
-                        (namespace, version, name),
-                    )
-                applied.append(f"{namespace}/{name}")
+            version = int(name[:4])
+            sql = folder.joinpath(name).read_text(encoding="utf-8")
+            with self.transaction():
+                for statement in _split_sql(sql):
+                    self._conn.execute(statement)
+                self._conn.execute(
+                    "INSERT INTO schema_migrations(namespace, version, name) VALUES (?,?,?)",
+                    (namespace, version, name),
+                )
+            applied.append(f"{namespace}/{name}")
         return applied
+
+
+def _available(package: str) -> list[str]:
+    folder = resources.files(package).joinpath("migrations")
+    return sorted(f.name for f in folder.iterdir() if _MIGRATION_RE.match(f.name))
 
 
 def _split_sql(script: str) -> list[str]:
