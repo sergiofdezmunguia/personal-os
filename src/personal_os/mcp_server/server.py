@@ -1,6 +1,7 @@
 """Servidor MCP del Personal OS: otra interfaz (como la CLI) sobre los mismos servicios.
 
-Herramientas mínimas: crear/listar/completar tareas, crear/listar eventos y sincronizar.
+Herramientas mínimas: crear/listar/completar tareas, crear/listar eventos, sincronizar y
+finanzas (solo lectura + proponer reglas de categorización, que el usuario aprueba).
 Todo cambio queda auditado con actor `mcp`. Sin lógica de negocio aquí.
 
 Ejecutar: `uv run pos-mcp` (stdio). Registrado para Claude Code en `.mcp.json`.
@@ -23,6 +24,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
+from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
 
@@ -36,6 +38,10 @@ y Apple Calendario. Los datos viven en el Personal OS; Apple es la interfaz.
 - Evento (create_calendar_event): cita con hora concreta o día completo. Va a Calendario.
 - Fechas y horas son "de pared" en la zona horaria del usuario (ver list_tasks → timezone/today).
   Formatos: fecha YYYY-MM-DD, hora HH:MM, inicio de evento YYYY-MM-DDTHH:MM.
+- Finanzas: list_transactions y finance_summary son de solo lectura (importes en céntimos;
+  negativo = cargo). Para categorizar, propose_category_rule crea una regla PROPUESTA que
+  no se aplica hasta que el usuario la aprueba (`pos finance rule approve <id>`). Antes de
+  proponer, mira list_category_rules para no duplicar.
 - Tras crear o modificar, llama a sync_apple. Calendario se actualiza al momento;
   Recordatorios cuando el iPhone ejecute su bridge (al cerrar la app o a horas fijas).
 """
@@ -210,6 +216,109 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "backup": outcome.backup.path.name if outcome.backup else None,
             "backup_warnings": outcome.backup_warnings,
             "note": "Los cambios en Recordatorios llegan al iPhone cuando se ejecute su bridge.",
+        }
+
+    # ------------------------------------------------------------------ finanzas
+
+    def _txn_view(t) -> dict[str, Any]:
+        return {
+            "id": t.id,
+            "date": t.booking_date,
+            "description": t.description,
+            "amount_cents": t.amount_cents,
+            "amount": fmt_eur(t.amount_cents),
+            "category": t.category,
+            "category_source": t.category_source,
+            "account_id": t.account_id,
+        }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def list_transactions(
+        month: str | None = None,
+        category: str | None = None,
+        uncategorized: bool = False,
+        search: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Movimientos bancarios importados, más recientes primero. month YYYY-MM;
+        category es un slug (ver finance_summary.categories); search busca en el concepto."""
+        svc = bootstrap.finance_service(open_app())
+        try:
+            items = svc.list_transactions(
+                month=month,
+                category=category,
+                uncategorized=uncategorized,
+                search=search,
+                limit=min(max(limit, 1), 500),
+            )
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        return {"transactions": [_txn_view(t) for t in items], "count": len(items)}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def finance_summary(month: str | None = None) -> dict[str, Any]:
+        """Resumen de un mes (YYYY-MM; el actual por defecto): ingresos, gastos, neto (sin
+        traspasos), gasto por categoría, cuentas, categorías disponibles y última importación."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        month = month or datetime.now(ZoneInfo(application.config.timezone)).strftime("%Y-%m")
+        try:
+            s = svc.month_summary(month)
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "month": s.month,
+            "income_cents": s.income_cents,
+            "expense_cents": s.expense_cents,
+            "uncategorized_cents": s.uncategorized_cents,
+            "transfer_cents": s.transfer_cents,
+            "net_cents": s.net_cents,
+            "net": fmt_eur(s.net_cents),
+            "transactions": s.transactions,
+            "uncategorized": s.uncategorized,
+            "by_category": [dataclasses.asdict(c) for c in s.by_category],
+            "accounts": [{"id": a.id, "label": a.label} for a in svc.list_accounts()],
+            "categories": [dataclasses.asdict(c) for c in svc.list_categories()],
+            "last_import_at": svc.last_import_at(),
+        }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def list_category_rules() -> dict[str, Any]:
+        """Reglas de categorización: active (se aplican), proposed (esperan al usuario) y
+        rejected."""
+        rules = bootstrap.finance_service(open_app()).list_rules()
+        return {"rules": [dataclasses.asdict(r) for r in rules]}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=False))
+    def propose_category_rule(
+        pattern: str,
+        category: str,
+        reason: str,
+        match_type: Literal["contains", "regex"] = "contains",
+        direction: Literal["debit", "credit"] | None = None,
+    ) -> dict[str, Any]:
+        """Propone una regla de categorización. NO se aplica: queda pendiente hasta que el
+        usuario la apruebe. pattern se compara sin mayúsculas ni acentos con el concepto.
+        Devuelve cuántos movimientos casarían, para que el usuario decida."""
+        svc = bootstrap.finance_service(open_app())
+        try:
+            matches = svc.preview_rule(pattern, match_type=match_type, direction=direction)
+            rule, _ = svc.add_rule(
+                _ctx(),
+                pattern,
+                category,
+                match_type=match_type,
+                direction=direction,
+                reason=reason,
+            )
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        return {
+            "rule_id": rule.id,
+            "status": rule.status,
+            "would_match": len(matches),
+            "examples": [_txn_view(t) for t in matches[:5]],
+            "next_step": f"El usuario debe aprobarla: pos finance rule approve {rule.id}",
         }
 
     return server

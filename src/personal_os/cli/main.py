@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import typer
 
 from personal_os import bootstrap as wiring
-from personal_os.cli import event_cmds, ops_cmds, task_cmds
+from personal_os.cli import event_cmds, finance_cmds, ops_cmds, task_cmds
 from personal_os.cli.output import echo_json as _echo_json
 from personal_os.cli.output import fail
 from personal_os.core import secrets as secrets_mod
@@ -27,6 +27,7 @@ bridge_app = typer.Typer(
 sync_app = typer.Typer(help="Sincronización con Apple.", invoke_without_command=True)
 app.add_typer(task_cmds.app, name="task")
 app.add_typer(event_cmds.app, name="event")
+app.add_typer(finance_cmds.app, name="finance")
 app.add_typer(ops_cmds.backup_app, name="backup")
 app.command("doctor")(ops_cmds.doctor)
 app.add_typer(sync_app, name="sync")

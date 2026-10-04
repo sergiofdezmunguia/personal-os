@@ -20,6 +20,7 @@ MIGRATIONS = [
     ("core", "personal_os.core"),
     ("tasks", "personal_os.tasks"),
     ("calendar", "personal_os.calendar"),
+    ("finance", "personal_os.finance"),
     ("sync", "personal_os.sync"),
 ]
 
@@ -58,6 +59,15 @@ def reminders_gateway(cfg: Config):
 
 
 # --------------------------------------------------------------------------- servicios
+
+
+def finance_service(application: App):
+    from personal_os.core.events import EventLog
+    from personal_os.finance.service import FinanceService
+
+    return FinanceService(
+        application.db, application.clock, EventLog(application.db, application.clock)
+    )
 
 
 def task_service(application: App):
