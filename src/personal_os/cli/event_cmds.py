@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import typer
 
+from personal_os import bootstrap as wiring
 from personal_os.calendar.models import CalendarError
-from personal_os.cli import wiring
 from personal_os.cli.output import echo_json, fail
 from personal_os.cli.parsing import parse_datetime, today
 from personal_os.core import rrule as _rrule

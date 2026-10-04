@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from personal_os.cli.wiring import MIGRATIONS
+from personal_os.bootstrap import MIGRATIONS
 from personal_os.core.clock import FixedClock
 from personal_os.core.db import Database
 from personal_os.core.events import EventLog

@@ -25,7 +25,7 @@ pytestmark = [
 @pytest.fixture
 def gateway(monkeypatch):
     monkeypatch.setenv("POS_CONFIG_DIR", str(Path.home() / ".config" / "personal-os"))
-    from personal_os.cli.wiring import calendar_gateway
+    from personal_os.bootstrap import calendar_gateway
     from personal_os.core.config import load_config
 
     gw = calendar_gateway(load_config())
