@@ -375,3 +375,73 @@ def test_doctor_finance_checks(app, svc, clock):
     assert any(c.status == WARN and "propuestas" in c.message for c in fin())
     clock.advance(**{"days": 40})
     assert any(c.status == WARN and "Última importación" in c.message for c in fin())
+
+
+# ------------------------------------------------------------------ subcategorías
+
+
+def test_subcategories_roll_up_in_summary_and_filters(svc):
+    do_import(svc, fake.build(fake.SEPTEMBER))
+    svc.add_rule(CLI, "gasolinera", "combustible")
+    svc.add_rule(CLI, "cajero", "transporte")  # directamente en la principal
+    s = svc.month_summary("2026-09")
+    (transporte,) = [c for c in s.by_category if c.slug == "transporte"]
+    assert transporte.total_cents == -11000 and transporte.count == 2
+    assert [(c.slug, c.total_cents) for c in transporte.children] == [("combustible", -6000)]
+    assert s.expense_cents == -11000
+    assert len(svc.list_transactions(category="transporte")) == 2  # incluye subcategorías
+    assert len(svc.list_transactions(category="combustible")) == 1
+
+
+def test_add_category_and_subcategory(svc):
+    c = svc.add_category(CLI, "bicicleta", "Bicicleta", parent="transporte")
+    assert c.kind == "expense" and c.parent == "transporte"
+    top = svc.add_category(CLI, "mascotas", "Mascotas", kind="expense")
+    assert top.parent is None
+    with pytest.raises(FinanceError, match="un nivel"):
+        svc.add_category(CLI, "ruedas", "Ruedas", parent="bicicleta")
+    with pytest.raises(FinanceError, match="Ya existe"):
+        svc.add_category(CLI, "vuelos", "Vuelos")
+    with pytest.raises(FinanceError, match="tipo"):
+        svc.add_category(CLI, "x-ingreso", "X", parent="transporte", kind="income")
+    with pytest.raises(FinanceError, match="kind"):
+        svc.add_category(CLI, "sin-tipo", "Sin tipo")
+    with pytest.raises(FinanceError, match="usuario"):
+        svc.add_category(MCP, "desde-claude", "X", kind="expense")
+
+
+def test_edit_rule_moves_its_transactions(svc):
+    do_import(svc, fake.build(fake.SEPTEMBER))
+    rule, _ = svc.add_rule(CLI, "gasolinera", "transporte")
+    (fuel,) = svc.list_transactions(search="gasolinera")
+    svc.set_category(CLI, fuel.id, "ocio")  # manual: no se mueve
+    svc.set_category(CLI, fuel.id, None)
+    updated, moved = svc.update_rule(CLI, rule.id, category="combustible")
+    assert updated.category == "combustible" and moved == 1
+    assert svc.get_transaction(fuel.id).category == "combustible"
+    with pytest.raises(FinanceError, match="usuario"):
+        svc.update_rule(MCP, rule.id, category="vuelos")
+
+
+def test_edit_rule_priority_recomputes(svc):
+    do_import(svc, fake.build(fake.SEPTEMBER))
+    svc.add_rule(CLI, "transferencia", "traspaso", priority=50)
+    nomina, _ = svc.add_rule(CLI, "nomina", "nomina", priority=100)
+    assert svc.list_transactions(category="nomina") == []
+    svc.update_rule(CLI, nomina.id, priority=10)
+    assert len(svc.list_transactions(category="nomina")) == 1
+
+
+def test_cli_categories_tree_and_rule_edit(app):
+    runner = CliRunner()
+    out = runner.invoke(cli, ["finance", "categories"]).output
+    assert "  vuelos" in out and out.index("transporte") < out.index("  vuelos")
+    res = runner.invoke(
+        cli, ["finance", "category", "add", "bici", "Bici", "--parent", "transporte"]
+    )
+    assert res.exit_code == 0 and "dentro de transporte" in res.output
+    svc = bootstrap.finance_service(app)
+    rule, _ = svc.add_rule(CLI, "x", "transporte")
+    res = runner.invoke(cli, ["finance", "rule", "edit", rule.id, "-c", "bici"])
+    assert res.exit_code == 0 and "→ bici" in res.output
+    assert runner.invoke(cli, ["finance", "rule", "edit", rule.id]).exit_code == 1

@@ -91,7 +91,9 @@ class FinanceService:
         return Account(**dict(rows[0]))
 
     def list_categories(self) -> list[Category]:
-        rows = self.db.all("SELECT * FROM fin_categories ORDER BY kind, name")
+        rows = self.db.all(
+            "SELECT * FROM fin_categories ORDER BY kind, COALESCE(parent, slug), parent IS NOT NULL, name"
+        )
         return [Category(**dict(r)) for r in rows]
 
     def get_category(self, slug: str) -> Category:
@@ -126,8 +128,10 @@ class FinanceService:
             where.append("account_id = ?")
             params.append(account_id)
         if category:
-            where.append("category = ?")
-            params.append(category)
+            where.append(
+                "category IN (SELECT slug FROM fin_categories WHERE slug = ? OR parent = ?)"
+            )
+            params += [category, category]
         if uncategorized:
             where.append("category IS NULL")
         sql = "SELECT * FROM fin_transactions"
@@ -537,7 +541,7 @@ class FinanceService:
     def month_summary(self, month: str, *, account_id: str | None = None) -> MonthSummary:
         self._check_month(month)
         sql = (
-            "SELECT t.category AS slug, c.name AS name, c.kind AS kind,"
+            "SELECT t.category AS slug, c.name AS name, c.kind AS kind, c.parent AS parent,"
             " SUM(t.amount_cents) AS total, COUNT(*) AS n"
             " FROM fin_transactions t LEFT JOIN fin_categories c ON c.slug = t.category"
             " WHERE t.booking_date LIKE ?"
@@ -546,18 +550,33 @@ class FinanceService:
         if account_id:
             sql += " AND t.account_id = ?"
             params.append(account_id)
-        sql += " GROUP BY t.category ORDER BY total"
+        sql += " GROUP BY t.category"
         rows = self.db.all(sql, params)
-        by_cat = [
-            CategoryTotal(
-                slug=r["slug"],
-                name=r["name"] or "Sin categoría",
-                kind=r["kind"],
-                total_cents=r["total"],
-                count=r["n"],
-            )
-            for r in rows
-        ]
+        names = {c.slug: c for c in self.list_categories()}
+        groups: dict[str | None, dict] = {}
+        for r in rows:
+            top = r["parent"] or r["slug"]
+            g = groups.setdefault(top, {"total": 0, "n": 0, "children": []})
+            g["total"] += r["total"]
+            g["n"] += r["n"]
+            if r["parent"]:
+                g["children"].append(
+                    CategoryTotal(r["slug"], r["name"], r["kind"], r["total"], r["n"])
+                )
+        by_cat = sorted(
+            (
+                CategoryTotal(
+                    slug=top,
+                    name=names[top].name if top else "Sin categoría",
+                    kind=names[top].kind if top else None,
+                    total_cents=g["total"],
+                    count=g["n"],
+                    children=sorted(g["children"], key=lambda c: c.total_cents),
+                )
+                for top, g in groups.items()
+            ),
+            key=lambda c: c.total_cents,
+        )
 
         def total(kind):
             return sum(c.total_cents for c in by_cat if c.kind == kind)
@@ -573,3 +592,88 @@ class FinanceService:
             transactions=sum(c.count for c in by_cat),
             uncategorized=uncat.count if uncat else 0,
         )
+
+    # ---------------------------------------------------------------- categorías
+
+    def add_category(
+        self,
+        ctx: ChangeContext,
+        slug: str,
+        name: str,
+        *,
+        parent: str | None = None,
+        kind: str | None = None,
+    ) -> Category:
+        """Crea una categoría (o subcategoría de `parent`, de la que hereda el tipo)."""
+        if ctx.actor == "mcp":
+            raise FinanceError("Las categorías solo las crea el usuario")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,40}", slug):
+            raise FinanceError("El slug solo admite minúsculas, números y guiones")
+        if self.db.one("SELECT 1 FROM fin_categories WHERE slug = ?", (slug,)):
+            raise FinanceError(f"Ya existe la categoría {slug!r}")
+        if parent is not None:
+            p = self.get_category(parent)
+            if p.parent is not None:
+                raise FinanceError("Solo hay un nivel de subcategorías")
+            if kind is not None and kind != p.kind:
+                raise FinanceError(f"Una subcategoría de {p.slug} es de tipo {p.kind}")
+            kind = p.kind
+        if kind not in ("expense", "income", "transfer"):
+            raise FinanceError("kind debe ser expense, income o transfer")
+        with self.db.transaction():
+            self.db.execute(
+                "INSERT INTO fin_categories(slug, name, kind, parent) VALUES (?,?,?,?)",
+                (slug, name.strip(), kind, parent),
+            )
+            self.events.record(
+                ctx,
+                "finance.category.created",
+                "fin_category",
+                slug,
+                {"name": name, "kind": kind, "parent": parent},
+            )
+        return self.get_category(slug)
+
+    def update_rule(
+        self,
+        ctx: ChangeContext,
+        ref: str,
+        *,
+        category: str | None = None,
+        priority: int | None = None,
+    ) -> tuple[Rule, int]:
+        """Cambia destino o prioridad de una regla. Los movimientos que ya categorizaba se
+        recolocan; con nueva prioridad se recalcula todo lo categorizado por reglas."""
+        if ctx.actor == "mcp":
+            raise FinanceError("Las reglas solo las gestiona el usuario")
+        rule = self.get_rule(ref)
+        if category is not None:
+            self.get_category(category)
+        now = self._now()
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE fin_rules SET category = COALESCE(?, category),"
+                " priority = COALESCE(?, priority), updated_at = ? WHERE id = ?",
+                (category, priority, now, rule.id),
+            )
+            moved = 0
+            if category is not None:
+                moved = self.db.execute(
+                    "UPDATE fin_transactions SET category = ?, updated_at = ?"
+                    " WHERE rule_id = ? AND category_source = 'rule'",
+                    (category, now, rule.id),
+                ).rowcount
+            self.events.record(
+                ctx,
+                "finance.rule.updated",
+                "fin_rule",
+                rule.id,
+                {"category": category, "priority": priority},
+            )
+            if priority is not None:
+                self.db.execute(
+                    "UPDATE fin_transactions SET category = NULL, category_source = NULL,"
+                    " rule_id = NULL WHERE category_source = 'rule'"
+                )
+                moved = self._apply_rules(ctx, None)
+        return self.get_rule(rule.id), moved

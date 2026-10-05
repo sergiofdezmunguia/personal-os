@@ -166,13 +166,35 @@ def categorize(
 
 @app.command("categories")
 def categories(as_json: bool = typer.Option(False, "--json")) -> None:
-    """Categorías disponibles."""
+    """Categorías disponibles (las subcategorías, sangradas bajo su principal)."""
     items = _svc().list_categories()
     if as_json:
         echo_json(items)
         return
     for c in items:
-        typer.echo(f"{c.slug:<16} {c.kind:<9} {c.name}")
+        slug = f"  {c.slug}" if c.parent else c.slug
+        typer.echo(f"{slug:<22} {c.kind:<9} {c.name}")
+
+
+category_app = typer.Typer(help="Categorías propias.", no_args_is_help=True)
+app.add_typer(category_app, name="category")
+
+
+@category_app.command("add")
+def category_add(
+    slug: str,
+    name: str,
+    parent: str | None = typer.Option(None, "--parent", help="Categoría principal"),
+    kind: str | None = typer.Option(
+        None, "--kind", help="expense | income | transfer (sin --parent)"
+    ),
+) -> None:
+    """Crea una categoría o una subcategoría (--parent)."""
+    try:
+        c = _svc().add_category(ChangeContext.cli(), slug, name, parent=parent, kind=kind)
+    except FinanceError as exc:
+        fail(str(exc))
+    typer.echo(f"✓ {c.slug} ({c.kind}{', dentro de ' + c.parent if c.parent else ''})")
 
 
 @app.command("summary")
@@ -205,6 +227,8 @@ def summary(
     typer.echo("")
     for c in s.by_category:
         typer.echo(f"  {c.name:<32} {fmt_eur(c.total_cents):>14}  {c.count:>3}")
+        for sub in c.children:
+            typer.echo(f"    · {sub.name:<28} {fmt_eur(sub.total_cents):>14}  {sub.count:>3}")
 
 
 # --------------------------------------------------------------------------- reglas
@@ -266,6 +290,24 @@ def rule_preview(
     typer.echo(f"{len(items)} movimientos")
     for t in items[:30]:
         typer.echo(_tx_line(t))
+
+
+@rule_app.command("edit")
+def rule_edit(
+    ref: str,
+    category: str | None = typer.Option(None, "--category", "-c"),
+    priority: int | None = typer.Option(None, "--priority"),
+) -> None:
+    """Cambia la categoría destino o la prioridad de una regla y recoloca sus movimientos."""
+    if category is None and priority is None:
+        fail("Indica --category y/o --priority")
+    try:
+        rule, moved = _svc().update_rule(
+            ChangeContext.cli(), ref, category=category, priority=priority
+        )
+    except FinanceError as exc:
+        fail(str(exc))
+    typer.echo(f"✓ {_rule_line(rule)}\n  {moved} movimientos recolocados")
 
 
 @rule_app.command("approve")

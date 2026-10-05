@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 RuleStatus = Literal["active", "proposed", "rejected"]
@@ -57,6 +57,7 @@ class Category:
     slug: str
     name: str
     kind: CategoryKind
+    parent: str | None = None  # un solo nivel: las subcategorías heredan el tipo del padre
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,7 @@ class CategoryTotal:
     kind: str | None
     total_cents: int
     count: int
+    children: list[CategoryTotal] = field(default_factory=list)  # desglose por subcategoría
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,7 @@ class MonthSummary:
     expense_cents: int  # negativo
     transfer_cents: int
     uncategorized_cents: int
-    by_category: list[CategoryTotal]
+    by_category: list[CategoryTotal]  # categorías principales con su desglose
     transactions: int
     uncategorized: int
 

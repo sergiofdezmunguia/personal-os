@@ -29,6 +29,12 @@ uv run pos finance rule approve --all | <id>…          # o reject <id>
 uv run pos finance rule apply --recategorize           # tras cambiar prioridades
 ```
 
+Subcategorías (un nivel): `pos finance categories` las muestra sangradas;
+`pos finance category add <slug> "<Nombre>" --parent transporte` crea una propia;
+`pos finance rule edit <id> --category vuelos` cambia el destino de una regla y recoloca
+sus movimientos. El resumen agrupa por categoría principal con desglose, y filtrar por una
+principal incluye sus subcategorías.
+
 Las reglas comparan sin mayúsculas ni acentos. Menor prioridad = se evalúa antes; gana la
 primera que casa.
 
