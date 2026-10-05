@@ -12,7 +12,10 @@ queda para más adelante) y no queremos conectores frágiles. Los datos son sens
   (`finance/importers/`): bytes → `ParsedStatement`. Formato detectado por contenido.
   - Santander: «Descargar movimientos» en Excel (`.xls` BIFF, leído con `xlrd`). Estructura
     documentada en `importers/santander.py`.
-  - Trade Republic: exportación CSV nativa de la app (pendiente de muestra del formato).
+  - Trade Republic: «Extracto de cuenta» en PDF (leído con `pdfplumber`). Columnas
+    separadas por posición; cada movimiento es una franja vertical anclada en el día (la
+    fecha puede venir en una línea o apilada). El signo se deduce del saldo, que además
+    debe terminar en el BALANCE FINAL del resumen.
 - **Validación antes de guardar**: el saldo debe encadenar en todo el extracto; si no, se
   rechaza (fichero editado o incompleto). El saldo de cabecera que no cuadra solo avisa
   (compras con tarjeta pendientes).
@@ -22,7 +25,8 @@ queda para más adelante) y no queremos conectores frágiles. Los datos son sens
   lo importado y el saldo no enlaza, se avisa de un posible hueco.
 - **Minimización**: del IBAN solo se guardan su sha256 y los 4 últimos; el titular nunca
   se lee; los números de tarjeta (13-19 dígitos) se enmascaran en el concepto antes de
-  guardar. Importes en céntimos enteros.
+  guardar; también IBAN de terceros (país + 4 últimos) y teléfonos (3 últimos).
+  Importes en céntimos enteros.
 - **Categorización determinista** por reglas (`contains` sin mayúsculas/acentos o `regex`,
   filtro cargo/abono, prioridad). Lo puesto a mano nunca lo pisan las reglas. Categorías
   fijas sembradas por migración, con tipo `expense | income | transfer`; los traspasos

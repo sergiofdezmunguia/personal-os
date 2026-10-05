@@ -299,7 +299,7 @@ class FinanceService:
                 acc_id,
                 st.account_name,
                 st.institution,
-                "bank",
+                st.account_kind,
                 st.currency,
                 st.external_ref,
                 st.last4,

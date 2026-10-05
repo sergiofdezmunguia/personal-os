@@ -36,6 +36,7 @@ class ParsedStatement:
     transactions: list[ParsedTransaction]  # de la más antigua a la más reciente
     balance_end_cents: int | None = None
     warnings: list[str] = field(default_factory=list)
+    account_kind: str = "bank"  # bank | broker | card | cash
 
     @property
     def external_ref(self) -> str:
@@ -54,12 +55,15 @@ class ParsedStatement:
 
 def detect(data: bytes, file_name: str) -> ParsedStatement:
     """Elige el parser según el contenido del fichero."""
-    from personal_os.finance.importers import santander
+    from personal_os.finance.importers import santander, trade_republic
 
     if santander.looks_like(data):
         return santander.parse(data)
+    if trade_republic.looks_like(data):
+        return trade_republic.parse(data)
     raise StatementError(
-        f"No reconozco el formato de {file_name}. Soportado: Santander (.xls de la banca online)."
+        f"No reconozco el formato de {file_name}. Soportados: Santander (.xls de la banca "
+        "online) y Trade Republic (PDF «Extracto de cuenta»)."
     )
 
 
@@ -70,6 +74,17 @@ def mask_card_numbers(text: str) -> str:
     """Los bancos incluyen el número completo de la tarjeta en el concepto: se conservan
     solo los 4 últimos (13-19 dígitos seguidos = PAN)."""
     return _CARD_RE.sub(lambda m: "····" + m.group(1), text)
+
+
+_IBAN_IN_TEXT_RE = re.compile(r"\b([A-Z]{2}\d{2})[A-Z0-9]{8,26}([A-Z0-9]{4})\b")
+_PHONE_RE = re.compile(r"\+\d{2,3}-?\d{6,9}(\d{3})\b")
+
+
+def mask_identifiers(text: str) -> str:
+    """Tarjetas (4 últimos), IBAN de terceros (país + 4 últimos) y teléfonos (3 últimos)."""
+    text = mask_card_numbers(text)
+    text = _IBAN_IN_TEXT_RE.sub(lambda m: f"{m.group(1)[:2]}····{m.group(2)}", text)
+    return _PHONE_RE.sub(lambda m: "+··· ···" + m.group(1), text)
 
 
 def check_balance_chain(txs: list[ParsedTransaction]) -> None:

@@ -85,9 +85,9 @@ Reglas impuestas por `lint-imports`:
 - Uso: `docs/finance.md`. Decisiones: ADR 0006.
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
-- Nunca guardar IBAN completo, titular ni números de tarjeta (`mask_card_numbers`).
+- Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
 - Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
-- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`). Nunca leer extractos
+- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`). Nunca leer extractos
   reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 
 ## Secretos y datos

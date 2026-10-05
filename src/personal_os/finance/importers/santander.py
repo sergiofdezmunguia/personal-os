@@ -26,7 +26,7 @@ from personal_os.finance.importers import (
     ParsedTransaction,
     StatementError,
     check_balance_chain,
-    mask_card_numbers,
+    mask_identifiers,
 )
 
 SOURCE = "santander_xls"
@@ -80,7 +80,7 @@ def parse(data: bytes) -> ParsedStatement:
                 ParsedTransaction(
                     booking_date=_parse_date(booking, sheet.book.datemode),
                     value_date=_parse_date(value, sheet.book.datemode) if value != "" else None,
-                    description=mask_card_numbers(" ".join(str(concept).split())),
+                    description=mask_identifiers(" ".join(str(concept).split())),
                     amount_cents=_cents(amount),
                     balance_after_cents=_cents(balance) if balance != "" else None,
                 )
