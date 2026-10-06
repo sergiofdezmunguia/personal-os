@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from personal_os.core.clock import Clock, SystemClock
 from personal_os.core.config import Config, ConfigError, load_config
@@ -67,6 +68,37 @@ def finance_service(application: App):
 
     return FinanceService(
         application.db, application.clock, EventLog(application.db, application.clock)
+    )
+
+
+def cash_yields(cfg: Config) -> tuple:
+    from personal_os.finance.close import CashYield
+
+    return tuple(
+        CashYield(y.institution, y.interest_rate, y.saveback_rate, y.saveback_cap_cents)
+        for y in cfg.finance.cash_yield
+    )
+
+
+def finance_month_close(application: App, month: str):
+    from personal_os.finance.close import month_close
+
+    return month_close(finance_service(application), month, yields=cash_yields(application.config))
+
+
+def finance_inbox(application: App):
+    """Importa la bandeja de extractos. None si no está configurada."""
+    from personal_os.core.events import ChangeContext
+    from personal_os.finance.inbox import process_inbox
+
+    inbox = application.config.finance.inbox_dir
+    if inbox is None:
+        return None
+    if not inbox.is_dir():
+        raise ConfigError(f"[finance].inbox_dir no existe o no es accesible: {inbox}")
+    today = application.clock.now().astimezone(ZoneInfo(application.config.timezone)).date()
+    return process_inbox(
+        finance_service(application), ChangeContext.system(), inbox, today=today.isoformat()
     )
 
 
@@ -213,9 +245,10 @@ def sync_offsite(cfg: Config) -> tuple[object | None, list[str]]:
 
 
 def run_sync(application: App, *, only: str | None = None, push: bool = True) -> SyncOutcome:
-    """Backup diario si toca, y sincroniza Recordatorios y (si está configurado) Calendario."""
-    if only not in (None, "reminders", "calendar"):
-        raise ValueError("only debe ser 'reminders', 'calendar' o None")
+    """Backup diario si toca, sincroniza Recordatorios y (si está configurado) Calendario, e
+    importa la bandeja de extractos (si está configurada)."""
+    if only not in (None, "reminders", "calendar", "finance"):
+        raise ValueError("only debe ser 'reminders', 'calendar', 'finance' o None")
     outcome = SyncOutcome(reports=[])
     with sync_lock(application.config):
         outcome.backup, outcome.offsite, outcome.backup_warnings = auto_backup(application)
@@ -228,4 +261,33 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
                 raise ConfigError(
                     "Calendario no configurado (apple_id + `pos secrets set icloud_app_password`)"
                 )
+        if only in (None, "finance"):
+            report = _finance_inbox_report(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+def _finance_inbox_report(application: App):
+    """La bandeja de extractos como un paso más de la sync. Nunca la interrumpe: avisa."""
+    from personal_os.core.ids import new_id
+    from personal_os.sync.store import SyncReport
+
+    report = SyncReport(run_id=new_id("correlation"), provider="finance_inbox")
+    try:
+        inbox = finance_inbox(application)
+    except ConfigError as exc:
+        report.errors.append(str(exc))
+        return report
+    if inbox is None:
+        return None
+    report.stats["files_imported"] = len(inbox.imported)
+    report.stats["transactions_new"] = inbox.rows_new
+    for item in inbox.items:
+        if item.result and item.result.already_imported and not item.error:
+            report.inc("files_already_imported")
+        for w in item.result.warnings if item.result and not item.result.already_imported else []:
+            report.warnings.append(f"{item.file_name}: {w}")
+    for item in inbox.failed:
+        report.warnings.append(f"{item.file_name}: {item.error}")
+    return report

@@ -116,6 +116,7 @@ class FinanceService:
         account_id: str | None = None,
         category: str | None = None,
         uncategorized: bool = False,
+        by_claude: bool = False,
         search: str | None = None,
         limit: int | None = 200,
     ) -> list[Transaction]:
@@ -134,6 +135,8 @@ class FinanceService:
             params += [category, category]
         if uncategorized:
             where.append("category IS NULL")
+        if by_claude:
+            where.append("category_source = 'manual' AND categorized_by = 'mcp'")
         sql = "SELECT * FROM fin_transactions"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -381,15 +384,28 @@ class FinanceService:
             return self._apply_rules(ctx, None)
 
     def set_category(self, ctx: ChangeContext, txn_ref: str, slug: str | None) -> Transaction:
-        """Categoría manual (gana siempre a las reglas). `None` la quita y deja actuar a las reglas."""
+        """Categoría manual (gana siempre a las reglas). `None` la quita y deja actuar a las reglas.
+
+        Desde el MCP (Claude) solo se categoriza lo que el usuario no ha puesto a mano; queda
+        marcado (`categorized_by = 'mcp'`) para poder revisarlo."""
         txn = self.get_transaction(txn_ref)
         if slug is not None:
             self.get_category(slug)
+        if ctx.actor == "mcp" and txn.category_source == "manual" and not txn.by_claude:
+            raise FinanceError(
+                f"{txn.id} lo categorizó el usuario a mano ({txn.category}); Claude no lo cambia"
+            )
         with self.db.transaction():
             self.db.execute(
                 "UPDATE fin_transactions SET category = ?, category_source = ?, rule_id = NULL,"
-                " updated_at = ? WHERE id = ?",
-                (slug, "manual" if slug else None, self._now(), txn.id),
+                " categorized_by = ?, updated_at = ? WHERE id = ?",
+                (
+                    slug,
+                    "manual" if slug else None,
+                    ctx.actor if slug else None,
+                    self._now(),
+                    txn.id,
+                ),
             )
             self.events.record(
                 ctx,
