@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -41,7 +41,11 @@ y Apple Calendario. Los datos viven en el Personal OS; Apple es la interfaz.
 - Finanzas: list_transactions y finance_summary son de solo lectura (importes en céntimos;
   negativo = cargo). Para categorizar, propose_category_rule crea una regla PROPUESTA que
   no se aplica hasta que el usuario la aprueba (`pos finance rule approve <id>`). Antes de
-  proponer, mira list_category_rules para no duplicar.
+  proponer, mira list_category_rules para no duplicar. Para comercios sueltos (que no se
+  repiten) usa categorize_transactions: queda marcado como «categorizado por Claude» y nunca
+  pisa lo que el usuario puso a mano. Si no sabes qué es un comercio, pregunta.
+- Cierre mensual: finance_month_close dice si faltan extractos, qué queda sin categoría, la
+  comparación con el mes anterior y si cuadran intereses y saveback.
 - Tras crear o modificar, llama a sync_apple. Calendario se actualiza al momento;
   Recordatorios cuando el iPhone ejecute su bridge (al cerrar la app o a horas fijas).
 """
@@ -229,6 +233,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "amount": fmt_eur(t.amount_cents),
             "category": t.category,
             "category_source": t.category_source,
+            "categorized_by_claude": t.by_claude,
             "account_id": t.account_id,
         }
 
@@ -319,6 +324,60 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "would_match": len(matches),
             "examples": [_txn_view(t) for t in matches[:5]],
             "next_step": f"El usuario debe aprobarla: pos finance rule approve {rule.id}",
+        }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+    def categorize_transactions(assignments: list[dict[str, str]]) -> dict[str, Any]:
+        """Categoriza movimientos sueltos: assignments = [{"id": "txn_…", "category": "slug"}].
+        Para comercios que no se repiten (si se repiten, mejor propose_category_rule). Queda
+        marcado como hecho por Claude y el usuario lo revisa con `pos finance list --by-claude`.
+        Nunca cambia lo que el usuario categorizó a mano: esos devuelven error."""
+        svc = bootstrap.finance_service(open_app())
+        done, errors = [], []
+        for a in assignments[:200]:
+            try:
+                t = svc.set_category(_ctx(), str(a["id"]), str(a["category"]))
+                done.append({"id": t.id, "category": t.category})
+            except (KeyError, FinanceError) as exc:
+                errors.append({"id": a.get("id"), "error": str(exc)})
+        return {"categorized": done, "errors": errors}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def finance_month_close(month: str | None = None) -> dict[str, Any]:
+        """Estado del cierre de un mes (YYYY-MM; por defecto el anterior): extractos completos
+        por cuenta, movimientos sin categoría, gasto por categoría frente al mes anterior y
+        rendimiento del efectivo (intereses y saveback esperados vs abonados; estimación)."""
+        application = open_app()
+        if month is None:
+            today = datetime.now(ZoneInfo(application.config.timezone)).date()
+            month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        try:
+            mc = bootstrap.finance_month_close(application, month)
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        s = mc.summary
+        return {
+            "month": mc.month,
+            "ready": mc.ready,
+            "statements_complete": mc.complete,
+            "coverage": [dataclasses.asdict(c) for c in mc.coverage],
+            "income_cents": s.income_cents,
+            "expense_cents": s.expense_cents,
+            "net_cents": s.net_cents,
+            "previous_net_cents": mc.previous.net_cents,
+            "uncategorized": s.uncategorized,
+            "categorized_by_claude": mc.by_claude,
+            "expense_deltas": [
+                {**dataclasses.asdict(d), "delta_cents": d.delta_cents} for d in mc.deltas
+            ],
+            "cash_yield": [
+                {
+                    **dataclasses.asdict(y),
+                    "interest_ratio": y.interest_ratio,
+                    "saveback_ratio": y.saveback_ratio,
+                }
+                for y in mc.yields
+            ],
         }
 
     return server

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,7 @@ import typer
 
 from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
+from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
 from personal_os.finance.importers import StatementError, detect
 from personal_os.finance.models import FinanceError, fmt_eur
@@ -37,7 +38,7 @@ def _this_month() -> str:
 
 def _tx_line(t) -> str:
     cat = t.category or "·"
-    mark = "*" if t.category_source == "manual" else ""
+    mark = "~" if t.by_claude else "*" if t.category_source == "manual" else ""
     return f"{t.id}  {t.booking_date}  {fmt_eur(t.amount_cents):>14}  {cat + mark:<16} {t.description[:70]}"
 
 
@@ -88,6 +89,132 @@ def import_(
         typer.echo(f"  {pending} movimientos sin categoría: `pos finance list --uncategorized`")
 
 
+@app.command("inbox")
+def inbox(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Importa los extractos de la bandeja ([finance].inbox_dir) y los archiva en importados/."""
+    application = wiring.open_app()
+    try:
+        report = wiring.finance_inbox(application)
+    except ConfigError as exc:
+        fail(str(exc))
+    if report is None:
+        fail(
+            f"Falta [finance].inbox_dir en {application.config.config_file} "
+            "(la carpeta de iCloud Drive donde dejas los extractos)"
+        )
+    if as_json:
+        echo_json(report.items)
+        return
+    if not report.items:
+        typer.echo("La bandeja está vacía.")
+    for item in report.items:
+        r = item.result
+        if r and r.already_imported:
+            typer.echo(f"= {item.file_name}: ya estaba importado")
+        elif r:
+            typer.echo(
+                f"✓ {item.file_name} → {r.account.label}: {r.rows_new} nuevos, "
+                f"{r.categorized} categorizados por reglas"
+            )
+            for w in r.warnings:
+                typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+        if item.error:
+            typer.secho(f"✗ {item.file_name}: {item.error}", fg=typer.colors.RED)
+        elif item.archived_to:
+            typer.echo(f"  archivado en {item.archived_to}")
+    pending = len(_svc().list_transactions(uncategorized=True, limit=None))
+    if report.items and pending:
+        typer.echo(f"{pending} movimientos sin categoría: `pos finance list --uncategorized`")
+
+
+@app.command("close")
+def close(
+    month: str | None = typer.Argument(None, help="YYYY-MM (por defecto, el mes anterior)"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cierre mensual: extractos completos, pendientes, comparación y rendimiento del efectivo."""
+    application = wiring.open_app()
+    if month is None:
+        today = datetime.now(ZoneInfo(application.config.timezone)).date()
+        month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    try:
+        mc = wiring.finance_month_close(application, month)
+    except FinanceError as exc:
+        fail(str(exc))
+    if as_json:
+        echo_json(_close_view(mc))
+        return
+    s = mc.summary
+    state = "listo para cerrar" if mc.ready else "pendiente"
+    typer.echo(f"Cierre {mc.month} · {state}")
+    typer.echo("\nExtractos:")
+    for c in mc.coverage:
+        mark = "✓" if c.complete else "!"
+        typer.echo(f"  {mark} {c.label:<34} último movimiento {c.last_transaction or '—'}")
+    if not mc.complete:
+        typer.echo("    → deja el extracto que falta en la bandeja y `pos finance inbox`")
+    typer.echo(
+        f"\nIngresos {fmt_eur(s.income_cents)} · Gastos {fmt_eur(s.expense_cents)} · "
+        f"Neto {fmt_eur(s.net_cents)}  (mes anterior: {fmt_eur(mc.previous.net_cents)})"
+    )
+    if s.uncategorized:
+        typer.echo(
+            f"  {s.uncategorized} movimientos sin categoría ({fmt_eur(s.uncategorized_cents)})"
+        )
+    if mc.by_claude:
+        typer.echo(f"  {mc.by_claude} categorizados por Claude: `pos finance list --by-claude`")
+    moved = [d for d in mc.deltas if d.delta_cents and (d.total_cents or d.previous_cents)]
+    if moved:
+        typer.echo("\nGasto por categoría (frente al mes anterior):")
+        for d in moved:
+            typer.echo(f"  {d.name:<30} {fmt_eur(d.total_cents):>13}  ({_signed(d.delta_cents)})")
+    for y in mc.yields:
+        typer.echo(f"\nRendimiento de {y.label} (estimado):")
+        typer.echo(f"  Saldo medio {fmt_eur(y.average_balance_cents)}")
+        if y.interest_rate:
+            typer.echo(
+                f"  Intereses al {_pct(y.interest_rate)}: esperados {fmt_eur(y.interest_expected_cents)}"
+                f" brutos · abonados {_received(y.interest_received_cents, y.interest_ratio)}"
+            )
+        if y.saveback_rate:
+            typer.echo(
+                f"  Saveback {_pct(y.saveback_rate)} de {fmt_eur(y.card_spend_cents)} con tarjeta:"
+                f" esperado {fmt_eur(y.saveback_expected_cents)} · abonado "
+                f"{_received(y.saveback_received_cents, y.saveback_ratio)}"
+            )
+
+
+def _pct(v: float) -> str:
+    return f"{v:g} %".replace(".", ",")
+
+
+def _signed(cents: int) -> str:
+    return ("+" if cents > 0 else "") + fmt_eur(cents)
+
+
+def _received(cents: int | None, ratio: float | None) -> str:
+    if cents is None:
+        return "pendiente (llega el mes siguiente)"
+    return fmt_eur(cents) + (f" ({ratio:.0%} de lo esperado)" if ratio is not None else "")
+
+
+def _close_view(mc) -> dict:
+    return {
+        "month": mc.month,
+        "ready": mc.ready,
+        "complete": mc.complete,
+        "summary": {**mc.summary.__dict__, "net_cents": mc.summary.net_cents},
+        "previous_net_cents": mc.previous.net_cents,
+        "coverage": mc.coverage,
+        "deltas": [{**d.__dict__, "delta_cents": d.delta_cents} for d in mc.deltas],
+        "yields": [
+            {**y.__dict__, "interest_ratio": y.interest_ratio, "saveback_ratio": y.saveback_ratio}
+            for y in mc.yields
+        ],
+        "categorized_by_claude": mc.by_claude,
+    }
+
+
 @app.command("accounts")
 def accounts(as_json: bool = typer.Option(False, "--json")) -> None:
     """Cuentas conocidas."""
@@ -120,12 +247,15 @@ def list_(
     month: str | None = typer.Option(None, "--month", "-m", help="YYYY-MM"),
     category: str | None = typer.Option(None, "--category", "-c"),
     uncategorized: bool = typer.Option(False, "--uncategorized", "-u"),
+    by_claude: bool = typer.Option(
+        False, "--by-claude", help="Solo los que categorizó Claude (para revisarlos)"
+    ),
     search: str | None = typer.Option(None, "--search", "-s", help="Texto en el concepto"),
     account: str | None = typer.Option(None, "--account", help="id o últimos 4 del IBAN"),
     limit: int = typer.Option(50, "--limit", "-n"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Movimientos (más recientes primero). `*` = categoría puesta a mano."""
+    """Movimientos (más recientes primero). `*` = a mano por ti · `~` = por Claude."""
     svc = _svc()
     try:
         acc = svc.get_account(account).id if account else None
@@ -134,6 +264,7 @@ def list_(
             account_id=acc,
             category=category,
             uncategorized=uncategorized,
+            by_claude=by_claude,
             search=search,
             limit=limit,
         )
