@@ -25,6 +25,7 @@ OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
 STALE_MAILBOX = timedelta(hours=24)
 STALE_SNAPSHOT = timedelta(hours=48)
 STALE_BACKUP = timedelta(hours=48)
+STALE_FINANCE_IMPORT = timedelta(days=35)
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,43 @@ def check_offsite(cfg: Config, clock: Clock) -> list[Check]:
     return out
 
 
+def check_finance(cfg: Config, clock: Clock) -> list[Check]:
+    if not cfg.db_path.exists():
+        return [Check("finanzas", SKIP, "Sin base de datos")]
+    db = Database(cfg.db_path)
+    try:
+        if db.one("SELECT 1 FROM sqlite_master WHERE name = 'fin_imports'") is None:
+            return [Check("finanzas", SKIP, "Módulo sin migrar", "uv run pos init")]
+        row = db.one("SELECT MAX(imported_at) AS last, COUNT(*) AS n FROM fin_imports")
+        pending = db.one("SELECT COUNT(*) AS n FROM fin_transactions WHERE category IS NULL")["n"]
+        proposed = db.one("SELECT COUNT(*) AS n FROM fin_rules WHERE status = 'proposed'")["n"]
+    finally:
+        db.close()
+    if not row["n"]:
+        return [Check("finanzas", SKIP, "Sin extractos importados")]
+    age = _age(clock, row["last"])
+    out = [
+        Check(
+            "finanzas",
+            WARN if age > STALE_FINANCE_IMPORT else OK,
+            f"Última importación hace {_fmt_age(age)}; {pending} movimientos sin categoría",
+            "Descarga el extracto y `uv run pos finance import <fichero>`"
+            if age > STALE_FINANCE_IMPORT
+            else "",
+        )
+    ]
+    if proposed:
+        out.append(
+            Check(
+                "finanzas",
+                WARN,
+                f"{proposed} reglas propuestas por Claude esperan revisión",
+                "uv run pos finance rule list --status proposed",
+            )
+        )
+    return out
+
+
 def check_mailbox(cfg: Config, clock: Clock) -> list[Check]:
     if cfg.apple.mailbox_dir is None:
         return [Check("buzón", FAIL, "Falta [apple].mailbox_dir", "Ver docs/setup/iphone.md")]
@@ -489,6 +527,7 @@ def run_doctor(*, offline: bool = False, clock: Clock | None = None) -> list[Che
         ("bridge", lambda: check_bridge(cfg, clock)),
         ("caldav", lambda: check_caldav(cfg, clock, offline=offline)),
         ("sync", lambda: check_sync_health(cfg, clock)),
+        ("finanzas", lambda: check_finance(cfg, clock)),
     ]
     results: list[Check] = []
     for area, fn in checks:

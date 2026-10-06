@@ -49,6 +49,10 @@ def test_exposes_minimal_toolset(server):
         "create_calendar_event",
         "list_calendar_events",
         "sync_apple",
+        "list_transactions",
+        "finance_summary",
+        "list_category_rules",
+        "propose_category_rule",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
 

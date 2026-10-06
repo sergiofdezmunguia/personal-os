@@ -22,6 +22,10 @@ PREFIXES = {
     "batch": "bat",
     "run": "run",
     "correlation": "cor",
+    "account": "acc",
+    "import": "imp",
+    "transaction": "txn",
+    "rule": "rul",
 }
 
 

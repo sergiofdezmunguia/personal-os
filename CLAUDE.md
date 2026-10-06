@@ -29,14 +29,14 @@ ops/          operación: `doctor` (diagnóstico, solo lectura) y `drill` (simul
 bootstrap.py  composition root: conecta todo (solo lo importan las interfaces)
 adapters/     comunicación con proveedores (apple/: buzón Recordatorios, CalDAV, iCalendar)
 sync/         ports (interfaces + DTOs), motores de sync, enlaces, auditoría de operaciones
-tasks/ calendar/   dominio; módulos hermanos independientes
+tasks/ calendar/ finance/   dominio; módulos hermanos independientes
 core/         db+migraciones, backups, ids, reloj, eventos, config, secretos, rrule
 bridge/scriptable/ ejecutor en el iPhone (JS); docs/protocol-reminders-v1.md es el contrato
 ```
 
 Reglas impuestas por `lint-imports`:
-- Capas: `(cli | mcp_server) → ops → bootstrap → adapters → sync → (tasks | calendar) → core`.
-- `tasks` y `calendar` no se importan entre sí.
+- Capas: `(cli | mcp_server) → ops → bootstrap → adapters → sync → (tasks | calendar | finance) → core`.
+- `tasks`, `calendar` y `finance` no se importan entre sí.
 - `adapters` no importa el dominio: solo `sync.ports` y `core`.
 
 ## Invariantes
@@ -62,7 +62,8 @@ Reglas impuestas por `lint-imports`:
 
 - `.mcp.json` registra `personal-os` (`uv run pos-mcp`). Herramientas: `create_task`,
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
-  `sync_apple`. Actor de auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las
+  `sync_apple`, `list_transactions`, `finance_summary`, `list_category_rules`,
+  `propose_category_rule`. Actor de auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las
   existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
@@ -78,6 +79,16 @@ Reglas impuestas por `lint-imports`:
   Antes de una migración o cambio arriesgado: `pos backup create --label antes-de-…`.
 - Procedimiento completo: `docs/runbooks/backup-restore.md`.
 - Nunca restaurar sin `pos backup drill` previo ni sin que el usuario lo pida.
+
+## Finanzas
+
+- Uso: `docs/finance.md`. Decisiones: ADR 0006.
+- Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
+  nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
+- Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
+- Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
+- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`). Nunca leer extractos
+  reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 
 ## Secretos y datos
 
