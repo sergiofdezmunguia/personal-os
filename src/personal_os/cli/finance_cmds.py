@@ -47,7 +47,7 @@ def import_(
     dry_run: bool = typer.Option(False, "--dry-run", help="Solo analiza; no guarda nada"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Importa un extracto (Santander .xls). Idempotente: reimportar no duplica."""
+    """Importa un extracto (Santander .xls o PDF «Extracto de cuenta» de Trade Republic). Idempotente: reimportar no duplica."""
     data = file.read_bytes()
     try:
         statement = detect(data, file.name)
