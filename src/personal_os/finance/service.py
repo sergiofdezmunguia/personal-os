@@ -33,6 +33,7 @@ from personal_os.finance.models import (
 )
 
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+SAME_MOVEMENT_DAYS = 7  # margen al reconocer un movimiento con otra fecha de operación
 
 
 def normalize(text: str) -> str:
@@ -239,8 +240,11 @@ class FinanceService:
             counts: Counter = Counter()
             new_ids = []
             linked = self._link_existing(account.id, statement, now)
+            claimed: set[str] = set()
             for tx in statement.transactions:
                 if tx.external_id in linked:
+                    continue
+                if not tx.external_id and self._same_movement(account.id, tx, claimed):
                     continue
                 ident = (
                     tx.booking_date,
@@ -307,6 +311,33 @@ class FinanceService:
             warnings=warnings,
             rows_linked=len(linked),
         )
+
+    def _same_movement(self, account_id: str, tx, claimed: set[str]) -> bool:
+        """¿Ya está este movimiento con otra fecha de operación? Algunos bancos la cambian
+        entre formatos de exportación (Santander, compras con tarjeta) pero no la fecha valor,
+        el importe, el saldo ni el concepto. Solo se busca si la huella exacta no existe."""
+        if tx.value_date is None or tx.balance_after_cents is None:
+            return False
+        exact = self.db.one(
+            "SELECT 1 FROM fin_transactions WHERE account_id = ? AND booking_date = ?"
+            " AND value_date = ? AND amount_cents = ? AND balance_after_cents = ?",
+            (account_id, tx.booking_date, tx.value_date, tx.amount_cents, tx.balance_after_cents),
+        )
+        if exact is not None:
+            return False  # la huella decide (incluido el ordinal entre idénticos)
+        day = date.fromisoformat(tx.booking_date)
+        for r in self.db.all(
+            "SELECT id, booking_date, description FROM fin_transactions WHERE account_id = ?"
+            " AND value_date = ? AND amount_cents = ? AND balance_after_cents = ?",
+            (account_id, tx.value_date, tx.amount_cents, tx.balance_after_cents),
+        ):
+            if r["id"] in claimed:
+                continue
+            near = abs((date.fromisoformat(r["booking_date"]) - day).days) <= SAME_MOVEMENT_DAYS
+            if near and normalize(r["description"]) == normalize(tx.description):
+                claimed.add(r["id"])
+                return True
+        return False
 
     def _check_superseded_source(self, account: Account, st: ParsedStatement) -> None:
         """Una entidad que ya se importa con ids del banco (CSV de TR) no admite el PDF de

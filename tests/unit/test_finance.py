@@ -445,3 +445,35 @@ def test_cli_categories_tree_and_rule_edit(app):
     res = runner.invoke(cli, ["finance", "rule", "edit", rule.id, "-c", "bici"])
     assert res.exit_code == 0 and "→ bici" in res.output
     assert runner.invoke(cli, ["finance", "rule", "edit", rule.id]).exit_code == 1
+
+
+# ------------------------------------------------------------------ Santander .xlsx
+
+
+def test_santander_xlsx_has_the_same_content_as_the_xls():
+    xls = santander.parse(fake.build(fake.SEPTEMBER))
+    xlsx = detect(fake.build_xlsx(fake.SEPTEMBER), "export_excel.xlsx")
+    assert xlsx.source == "santander_xlsx" and xls.source == "santander_xls"
+    assert xlsx.transactions == xls.transactions
+    assert xlsx.external_ref == xls.external_ref and xlsx.last4 == "1234"
+    assert xlsx.balance_end_cents == xls.transactions[-1].balance_after_cents
+    assert "TITULAR" not in repr(xlsx)
+
+
+def test_santander_xlsx_rejects_other_currencies():
+    with pytest.raises(StatementError, match="divisa"):
+        santander.parse(fake.build_xlsx(fake.SEPTEMBER, currency="USD"))
+
+
+def test_changed_booking_date_is_the_same_movement(svc):
+    do_import(svc, fake.build(fake.SEPTEMBER))
+    card = next(t for t in svc.list_transactions(limit=None) if "Gasolinera" in t.description)
+    svc.set_category(CLI, card.id, "combustible")
+    # El formato nuevo da otra fecha de operación a la compra (misma fecha valor y saldo).
+    moved = [
+        ("04/09/2026", *r[1:]) if "Gasolinera" in r[2] else r for r in fake.SEPTEMBER
+    ] + fake.OCTOBER
+    r = do_import(svc, fake.build_xlsx(moved), "export_excel.xlsx")
+    assert r.rows_new == len(fake.OCTOBER) and r.rows_duplicate == len(fake.SEPTEMBER)
+    assert svc.get_transaction(card.id).category == "combustible"
+    assert len(svc.list_transactions(limit=None)) == len(fake.SEPTEMBER) + len(fake.OCTOBER)
