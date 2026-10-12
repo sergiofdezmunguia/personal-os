@@ -129,6 +129,8 @@ def inbox(as_json: bool = typer.Option(False, "--json")) -> None:
             typer.secho(f"✗ {item.file_name}: {item.error}", fg=typer.colors.RED)
         elif item.archived_to:
             typer.echo(f"  archivado en {item.archived_to}")
+        elif item.deferred:
+            typer.echo("  recién subido: se archivará en la próxima sync (cuando iCloud termine)")
     pending = len(_svc().list_transactions(uncategorized=True, limit=None))
     if report.items and pending:
         typer.echo(f"{pending} movimientos sin categoría: `pos finance list --uncategorized`")

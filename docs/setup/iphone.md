@@ -49,6 +49,16 @@ Apple, no se puede desactivar).
 Opcional: crea un **atajo** normal con la misma acción y añádelo a la pantalla de inicio
 como botón "Sincronizar".
 
+## 4b. iPhone — panel «Pulso del mes»
+
+`uv run pos bridge install` instala también el script **Personal OS Panel** en Scriptable.
+Ábrelo desde Scriptable (o crea en Atajos un atajo con la acción *Scriptable › Run Script ›
+Personal OS Panel*, con **Run In App** activado, y añádelo a la pantalla de inicio). El panel
+se actualiza en el PC con cada `pos sync`.
+
+Sin Scriptable también se ve desde **Archivos › iCloud Drive › Scriptable › personal-os ›
+panel › index.html**, pero sin tooltips (Archivos no ejecuta JavaScript).
+
 ## 5. Calendario (CalDAV)
 
 1. En la app **Calendario** › Calendarios › Añadir calendario (cuenta **iCloud**) ›

@@ -70,10 +70,17 @@ def test_same_second_backups_get_unique_names(app, clock):
 
 def test_verify_detects_corruption_and_tampering(app, clock):
     info = bk.create_backup(app.config.db_path, backup_dir(app), clock)
-    data = bytearray(info.path.read_bytes())
-    data[len(data) // 2] ^= 0xFF
+    original = info.path.read_bytes()
+    # Un byte cambiado no siempre corrompe: puede caer en bits de relleno de deflate y
+    # descomprimir a la misma base (sigue siendo restaurable). Se corrompe lo que importa:
+    data = bytearray(original)
+    data[-8] ^= 0xFF  # CRC32 del gzip
     info.path.write_bytes(bytes(data))
+    assert any("descomprimir" in p for p in bk.verify_backup(info).problems)
+    info.path.write_bytes(original[: len(original) // 2])  # truncado
     assert not bk.verify_backup(info).ok
+    info.path.write_bytes(gzip.compress(b"SQLite format 3\x00" + b"\x00" * 4096))  # otra base
+    assert any("sha256" in p for p in bk.verify_backup(info).problems)
 
     other = bk.create_backup(app.config.db_path, backup_dir(app), clock)
     m = json.loads(other.manifest_path.read_text())
