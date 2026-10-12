@@ -47,7 +47,9 @@ anterior sigue con movimientos sin categoría.
 ## Santander (cuenta)
 
 1. Banca online → la cuenta → **Movimientos** → elige el periodo → **Descargar → Excel**.
-   Se obtiene `transactions_<fecha>.xls`.
+   Según la versión de la web se obtiene `transactions_<fecha>.xls` o `export_excel.xlsx`;
+   los dos sirven. Entre formatos, alguna compra con tarjeta cambia de fecha de operación:
+   se reconoce como el mismo movimiento (misma fecha valor, importe, saldo y concepto).
 2. `uv run pos finance import ~/ruta/transactions_….xls` (prueba antes con `--dry-run`).
    Reimportar el mismo fichero o uno que solape no duplica nada.
 3. Revisa lo pendiente: `uv run pos finance list --uncategorized`.
