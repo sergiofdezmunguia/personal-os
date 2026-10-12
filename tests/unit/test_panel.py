@@ -165,3 +165,12 @@ def test_pos_panel_command(app, svc, monkeypatch):
     target = app.config.data_dir / "panel" / "index.html"
     assert target.read_text(encoding="utf-8").startswith("<!doctype") and opened == [target]
     assert CliRunner().invoke(cli, ["panel", "--no-open"]).exit_code == 0 and len(opened) == 1
+
+
+def test_headline(svc, clock):
+    _months(svc)
+    early = panel.headline(insights.build(svc, today=TODAY))
+    assert early.startswith("Vas 30 € por encima") and "supermercado (+30 €)" in early
+    assert "ahorrarás" not in early  # día 5: la proyección aún no se da
+    later = panel.headline(insights.build(svc, today="2026-10-20"))
+    assert "ahorrarás" in later

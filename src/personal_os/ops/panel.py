@@ -518,6 +518,32 @@ def section_trend(p: Panel) -> str:
 </section>"""
 
 
+def headline(p: Panel) -> str:
+    """El mes en una o dos frases (determinista)."""
+    pace = p.pace
+    if not pace.variable_habit_cents:
+        return "Aún no hay meses de referencia suficientes para comparar."
+    margin = max(2000, pace.variable_habit_to_day_cents * 0.05)
+    if pace.delta_cents > margin:
+        first = f"Vas {eur(pace.delta_cents)} por encima de tu ritmo habitual de gasto variable"
+    elif pace.delta_cents < -margin:
+        first = f"Vas {eur(-pace.delta_cents)} por debajo de tu ritmo habitual de gasto variable"
+    else:
+        first = "Vas al ritmo habitual de gasto variable"
+    movers = sorted(
+        (c for c in p.categories if not c.fixed and c.to_day_cents - c.habit_to_day_cents > 1000),
+        key=lambda c: c.habit_to_day_cents - c.to_day_cents,
+    )
+    if movers:
+        c = movers[0]
+        first += f"; lo que más ha subido es {c.name.lower()} ({eur(c.to_day_cents - c.habit_to_day_cents, sign=True)})"
+    second = ""
+    if pace.day >= 7 and pace.income_habit_cents:
+        second = f" Si sigues así, este mes ahorrarás unos {eur(pace.projected_saving_cents)}"
+        second += f" (sueles ahorrar {eur(p.habit.income_cents - p.habit.expense_cents)})."
+    return first + "." + second
+
+
 def render(p: Panel, *, generated_at: str) -> str:
     title_month = month_label(p.pace.month, long=True).capitalize() + " " + p.pace.month[:4]
     warnings = "".join(f'<div class="note" role="note">{esc(w)}</div>' for w in p.warnings)
@@ -542,7 +568,8 @@ def render(p: Panel, *, generated_at: str) -> str:
 <header>
   <div class="eyebrow">{esc(title_month)} · día {p.pace.day} de {p.pace.days}</div>
   <h1>Pulso del mes</h1>
-  <p class="sub">Cómo vas frente a lo habitual (media de {esc(habit)}), en qué se va el dinero y dónde centrarte.</p>
+  <p class="lead">{esc(headline(p))}</p>
+  <p class="sub">Lo habitual es la media de {esc(habit)}.</p>
 </header>
 {warnings}
 {body}
@@ -632,6 +659,7 @@ header{display:grid;gap:4px}
 h1{font-size:clamp(28px,6vw,40px);line-height:1.1;margin:0;font-weight:750;letter-spacing:-.01em}
 h2{font-size:21px;margin:0;font-weight:700}
 .sub{color:var(--ink-2);margin:0;max-width:65ch}
+.lead{font-size:17px;margin:6px 0 0;max-width:62ch;text-wrap:pretty}
 .muted{color:var(--muted)}.small{font-size:12.5px;margin:6px 0 0}
 section{display:grid;gap:12px}
 .panel{background:var(--surface);border:1px solid var(--ring);border-radius:10px;padding:16px;min-width:0}
