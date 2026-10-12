@@ -343,7 +343,7 @@ def section_pace(p: Panel) -> str:
 
 def section_categories_now(p: Panel) -> str:
     cats = sorted(
-        [c for c in p.categories if not c.fixed and (c.to_day_cents or c.habit_to_day_cents)],
+        [c for c in p.categories if not c.fixed and max(c.to_day_cents, c.habit_to_day_cents) > 0],
         key=lambda c: -max(c.to_day_cents, c.habit_to_day_cents),
     )[:9]
     if not cats:
@@ -357,8 +357,8 @@ def section_categories_now(p: Panel) -> str:
         rows.append(
             f'<div class="cat" data-tip="{esc(tip)}"><span class="name">{esc(c.name)}{" <small>· fijo</small>" if c.fixed else ""}</span>'
             f'<div class="track" role="img" aria-label="{esc(tip.replace("|", ", "))}">'
-            f'<div class="fill" style="width:{c.to_day_cents / top * 100:.1f}%"></div>'
-            f'<div class="avg" style="left:{c.habit_to_day_cents / top * 100:.1f}%"></div></div>'
+            f'<div class="fill" style="width:{max(c.to_day_cents, 0) / top * 100:.1f}%"></div>'
+            f'<div class="avg" style="left:{max(c.habit_to_day_cents, 0) / top * 100:.1f}%"></div></div>'
             f'<span class="vals">{eur(c.to_day_cents)}<span class="delta {cls}">{eur(d, sign=True) if d else "±0 €"}</span></span></div>'
         )
     return f"""
