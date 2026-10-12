@@ -11,6 +11,7 @@ import hashlib
 import itertools
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 
 class StatementError(Exception):
@@ -24,6 +25,7 @@ class ParsedTransaction:
     description: str
     amount_cents: int  # negativo = cargo
     balance_after_cents: int | None
+    external_id: str | None = None  # id del banco, si lo da (TR CSV): deduplica por él
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,9 @@ class ParsedStatement:
     balance_end_cents: int | None = None
     warnings: list[str] = field(default_factory=list)
     account_kind: str = "bank"  # bank | broker | card | cash
+    # Movimientos con `external_id`: si en la cuenta hay uno sin id con el mismo importe a
+    # ±`adopt_days` días (importado de otra fuente), se enlaza en vez de duplicarlo.
+    adopt_days: int = 0
 
     @property
     def external_ref(self) -> str:
@@ -53,17 +58,106 @@ class ParsedStatement:
         return self.transactions[0].booking_date, self.transactions[-1].booking_date
 
 
-def detect(data: bytes, file_name: str) -> ParsedStatement:
+@dataclass(frozen=True)
+class ParsedTrade:
+    external_id: str
+    trade_date: str  # YYYY-MM-DD
+    executed_at: str  # UTC ISO con Z
+    kind: str  # buy | sell | dividend
+    isin: str
+    name: str
+    asset_class: str
+    shares: Decimal  # negativo en ventas
+    price: Decimal | None
+    amount_cents: int  # efecto en el efectivo, sin comisión ni impuestos
+    fee_cents: int
+    tax_cents: int
+    savings_plan: bool
+
+
+@dataclass(frozen=True)
+class ParsedActivity:
+    """Exportación de actividad de un bróker: movimientos de efectivo + operaciones."""
+
+    source: str
+    institution: str
+    cash: ParsedStatement
+    trades: list[ParsedTrade]
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def period(self) -> tuple[str | None, str | None]:
+        return self.cash.period
+
+
+@dataclass(frozen=True)
+class ParsedPosition:
+    isin: str
+    name: str
+    shares: Decimal
+    price: Decimal
+    value_cents: int
+    price_date: str | None
+
+
+@dataclass(frozen=True)
+class ParsedValuation:
+    """Foto de la cartera a una fecha (posiciones valoradas + efectivo)."""
+
+    source: str
+    institution: str
+    as_of: str  # YYYY-MM-DD
+    securities_cents: int
+    cash_cents: int
+    total_cents: int
+    positions: list[ParsedPosition]
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def period(self) -> tuple[str | None, str | None]:
+        return self.as_of, self.as_of
+
+
+Parsed = ParsedStatement | ParsedActivity | ParsedValuation
+
+
+def detect(data: bytes, file_name: str) -> Parsed:
     """Elige el parser según el contenido del fichero."""
-    from personal_os.finance.importers import santander, trade_republic
+    from personal_os.finance.importers import (
+        santander,
+        trade_republic,
+        trade_republic_csv,
+        trade_republic_networth,
+    )
 
     if santander.looks_like(data):
         return santander.parse(data)
     if trade_republic.looks_like(data):
         return trade_republic.parse(data)
+    if trade_republic_csv.looks_like(data):
+        return trade_republic_csv.parse(data)
+    if trade_republic_networth.looks_like(data):
+        return trade_republic_networth.parse(data)
     raise StatementError(
         f"No reconozco el formato de {file_name}. Soportados: Santander (.xls de la banca "
-        "online) y Trade Republic (PDF «Extracto de cuenta»)."
+        "online) y Trade Republic (PDF «Extracto de cuenta», CSV «Exportación de "
+        "transacción» y PDF «Extracto del patrimonio neto»)."
+    )
+
+
+def describe(parsed: Parsed) -> str:
+    """Una línea para `--dry-run`: qué es y qué contiene (sin datos sensibles)."""
+    first, last = parsed.period
+    if isinstance(parsed, ParsedValuation):
+        return f"{parsed.source}: cartera a {parsed.as_of} · {len(parsed.positions)} posiciones"
+    if isinstance(parsed, ParsedActivity):
+        return (
+            f"{parsed.source}: {len(parsed.cash.transactions)} movimientos de efectivo, "
+            f"{len(parsed.trades)} operaciones · {first} → {last}"
+        )
+    return (
+        f"{parsed.source}: {parsed.account_name} ····{parsed.last4} · "
+        f"{len(parsed.transactions)} movimientos · {first} → {last}"
     )
 
 

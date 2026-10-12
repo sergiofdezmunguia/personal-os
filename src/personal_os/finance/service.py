@@ -13,6 +13,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable
+from datetime import date
 
 from personal_os.core.clock import Clock, to_iso
 from personal_os.core.db import Database
@@ -42,6 +43,8 @@ def normalize(text: str) -> str:
 
 
 def _fingerprint(account_id: str, tx, n: int) -> str:
+    if tx.external_id:  # el banco da un id estable: basta con él
+        return hashlib.sha256(f"{account_id}|ext|{tx.external_id}".encode()).hexdigest()
     key = "|".join(
         str(x)
         for x in (
@@ -175,12 +178,24 @@ class FinanceService:
     # ---------------------------------------------------------------- importar
 
     def import_statement(
-        self, ctx: ChangeContext, statement: ParsedStatement, *, file_name: str, file_sha256: str
+        self,
+        ctx: ChangeContext,
+        statement: ParsedStatement,
+        *,
+        file_name: str,
+        file_sha256: str,
+        account_id: str | None = None,
     ) -> ImportResult:
+        """Importa un extracto. `account_id` fuerza la cuenta (ficheros sin IBAN, como el CSV
+        de Trade Republic); si no, se busca o crea por entidad + IBAN."""
         now = self._now()
         warnings = list(statement.warnings)
         with self.db.transaction():
-            account = self._ensure_account(ctx, statement, now)
+            if account_id is not None:
+                account = self.get_account(account_id)
+            else:
+                account = self._ensure_account(ctx, statement, now)
+            self._check_superseded_source(account, statement)
             seen = self.db.one(
                 "SELECT id FROM fin_imports WHERE account_id = ? AND file_sha256 = ?",
                 (account.id, file_sha256),
@@ -223,7 +238,10 @@ class FinanceService:
             )
             counts: Counter = Counter()
             new_ids = []
+            linked = self._link_existing(account.id, statement, now)
             for tx in statement.transactions:
+                if tx.external_id in linked:
+                    continue
                 ident = (
                     tx.booking_date,
                     tx.value_date,
@@ -237,8 +255,8 @@ class FinanceService:
                 cur = self.db.execute(
                     "INSERT OR IGNORE INTO fin_transactions(id, account_id, import_id,"
                     " booking_date, value_date, description, amount_cents, currency,"
-                    " balance_after_cents, fingerprint, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " balance_after_cents, fingerprint, external_id, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         txn_id,
                         account.id,
@@ -250,13 +268,14 @@ class FinanceService:
                         statement.currency,
                         tx.balance_after_cents,
                         _fingerprint(account.id, tx, n),
+                        tx.external_id,
                         now,
                         now,
                     ),
                 )
                 if cur.rowcount:
                     new_ids.append(txn_id)
-            duplicates = len(statement.transactions) - len(new_ids)
+            duplicates = len(statement.transactions) - len(new_ids) - len(linked)
             self.db.execute(
                 "UPDATE fin_imports SET rows_new = ?, rows_duplicate = ? WHERE id = ?",
                 (len(new_ids), duplicates, import_id),
@@ -272,6 +291,7 @@ class FinanceService:
                     "source": statement.source,
                     "rows_new": len(new_ids),
                     "rows_duplicate": duplicates,
+                    "rows_linked": len(linked),
                     "categorized": categorized,
                     "period": [period_from, period_to],
                 },
@@ -285,7 +305,95 @@ class FinanceService:
             categorized=categorized,
             already_imported=False,
             warnings=warnings,
+            rows_linked=len(linked),
         )
+
+    def _check_superseded_source(self, account: Account, st: ParsedStatement) -> None:
+        """Una entidad que ya se importa con ids del banco (CSV de TR) no admite el PDF de
+        cuenta: sus movimientos no traen id y se duplicarían."""
+        if st.transactions and any(t.external_id for t in st.transactions):
+            return
+        has_ids = self.db.one(
+            "SELECT 1 FROM fin_transactions t JOIN fin_accounts a ON a.id = t.account_id"
+            " WHERE a.institution = ? AND t.external_id IS NOT NULL LIMIT 1",
+            (account.institution,),
+        )
+        if has_ids:
+            raise FinanceError(
+                f"{account.label} ya se importa desde la exportación CSV (con id por "
+                "movimiento); este extracto no hace falta. Usa la exportación CSV más reciente."
+            )
+
+    def _link_existing(self, account_id: str, st: ParsedStatement, now: str) -> set[str]:
+        """Movimientos con id del banco que ya estaban importados de otra fuente (sin id):
+        mismo importe y fecha a ±`adopt_days`. Se les pone el id y conservan categoría,
+        descripción y saldo. Devuelve los ids enlazados.
+
+        Antes de enlazar se contrasta el saldo al cierre de los días comunes: si el fichero
+        no cuadra con lo importado (p. ej. una exportación parcial), se rechaza."""
+        incoming = [t for t in st.transactions if t.external_id]
+        if not incoming:
+            return set()
+        known = {
+            r["external_id"]
+            for r in self.db.all(
+                "SELECT external_id FROM fin_transactions"
+                " WHERE account_id = ? AND external_id IS NOT NULL",
+                (account_id,),
+            )
+        }
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents, balance_after_cents, external_id"
+            " FROM fin_transactions WHERE account_id = ? ORDER BY booking_date, rowid",
+            (account_id,),
+        )
+        existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
+        free: dict[int, list] = {}
+        for r in rows:
+            if r["external_id"] is None:
+                free.setdefault(r["amount_cents"], []).append(r)
+
+        pending = [t for t in incoming if t.external_id not in known]
+        matches: dict[str, str] = {}  # external_id → txn id
+        used: set[str] = set()
+        for tolerance in range(st.adopt_days + 1):
+            for tx in pending:
+                if tx.external_id in matches:
+                    continue
+                day = date.fromisoformat(tx.booking_date)
+                for r in free.get(tx.amount_cents, []):
+                    if r["id"] in used:
+                        continue
+                    if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
+                        matches[tx.external_id] = r["id"]
+                        used.add(r["id"])
+                        break
+
+        # Saldo al cierre de cada día según el fichero frente al ya importado.
+        incoming_eod = {t.booking_date: t.balance_after_cents for t in incoming}
+        common = [
+            d
+            for d in {
+                t.booking_date
+                for t in incoming
+                if t.external_id in matches or t.external_id in known
+            }
+            if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
+        ]
+        if len(common) >= 5:
+            agree = sum(existing_eod[d] == incoming_eod[d] for d in common)
+            if agree / len(common) < 0.8:
+                raise FinanceError(
+                    f"El saldo del fichero no cuadra con lo ya importado ({agree} de "
+                    f"{len(common)} días coinciden). ¿Es una exportación parcial? Exporta el "
+                    "historial completo."
+                )
+        for ext, txn_id in matches.items():
+            self.db.execute(
+                "UPDATE fin_transactions SET external_id = ?, updated_at = ? WHERE id = ?",
+                (ext, now, txn_id),
+            )
+        return set(matches)
 
     def _ensure_account(self, ctx: ChangeContext, st: ParsedStatement, now: str) -> Account:
         row = self.db.one(

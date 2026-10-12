@@ -63,7 +63,8 @@ Reglas impuestas por `lint-imports`:
 - `.mcp.json` registra `personal-os` (`uv run pos-mcp`). Herramientas: `create_task`,
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
   `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
-  `list_category_rules`, `propose_category_rule`, `categorize_transactions`. Actor de
+  `list_category_rules`, `propose_category_rule`, `categorize_transactions`,
+  `investments_overview`. Actor de
   auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
@@ -82,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006 y 0007.
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007 y 0008 (inversiones).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -91,7 +92,9 @@ Reglas impuestas por `lint-imports`:
   revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
 - Cierre mensual: skill `.claude/skills/monthly-close/` + `finance/close.py` (solo lectura);
   bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
-- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`). Nunca leer extractos
+- Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
+  importado sin duplicar), PDF de patrimonio = único valor de mercado; nunca precios de red.
+- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`, `tests/trade_republic_activity_fake.py`). Nunca leer extractos
   reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 
 ## Secretos y datos

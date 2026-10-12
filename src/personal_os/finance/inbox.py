@@ -13,9 +13,10 @@ from pathlib import Path
 
 from personal_os.core.events import ChangeContext
 from personal_os.finance.importers import StatementError, detect
+from personal_os.finance.investments import import_document
 from personal_os.finance.models import FinanceError, ImportResult
 
-SUFFIXES = {".xls", ".xlsx", ".pdf"}
+SUFFIXES = {".xls", ".xlsx", ".pdf", ".csv"}
 ARCHIVE = "importados"
 
 
@@ -77,7 +78,8 @@ def process_inbox(svc, ctx: ChangeContext, inbox: Path, *, today: str) -> InboxR
         try:
             data = path.read_bytes()
             statement = detect(data, path.name)
-            item.result = svc.import_statement(
+            item.result = import_document(
+                svc,
                 ctx,
                 statement,
                 file_name=path.name,

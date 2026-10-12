@@ -10,7 +10,7 @@ import re
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,7 @@ STALE_SNAPSHOT = timedelta(hours=48)
 STALE_BACKUP = timedelta(hours=48)
 STALE_FINANCE_IMPORT = timedelta(days=35)
 CLOSE_GRACE_DAYS = 7  # días del mes siguiente para subir extractos antes de avisar
+STALE_VALUATION_DAYS = 40  # el PDF del patrimonio neto se sube a fin de mes
 
 
 @dataclass(frozen=True)
@@ -285,6 +286,7 @@ def check_finance(cfg: Config, clock: Clock) -> list[Check]:
             " WHERE category IS NULL AND booking_date LIKE ?",
             (prev_month + "-%",),
         )["n"]
+        investments = _check_investments(db, today)
     finally:
         db.close()
     inbox = _check_finance_inbox(cfg)
@@ -319,7 +321,24 @@ def check_finance(cfg: Config, clock: Clock) -> list[Check]:
                 f"Pide a Claude el cierre mensual (/monthly-close) o `uv run pos finance close {prev_month}`",
             )
         )
-    return out + inbox
+    return out + investments + inbox
+
+
+def _check_investments(db: Database, today) -> list[Check]:
+    """Valor de la cartera: depende de que el usuario suba el PDF del patrimonio neto."""
+    if db.one("SELECT 1 FROM sqlite_master WHERE name = 'fin_trades'") is None:
+        return []
+    if db.one("SELECT 1 FROM fin_trades LIMIT 1") is None:
+        return []
+    fix = "Sube a la bandeja el PDF «Extracto del patrimonio neto» de Trade Republic"
+    last = db.one("SELECT MAX(as_of) AS d FROM fin_valuations")["d"]
+    if last is None:
+        return [Check("inversiones", WARN, "Hay operaciones pero ninguna valoración", fix)]
+    days = (today - date.fromisoformat(last)).days
+    message = f"Última valoración del {last} (hace {days} {'día' if days == 1 else 'días'})"
+    if days > STALE_VALUATION_DAYS:
+        return [Check("inversiones", WARN, message, fix)]
+    return [Check("inversiones", OK, message)]
 
 
 def _check_finance_inbox(cfg: Config) -> list[Check]:

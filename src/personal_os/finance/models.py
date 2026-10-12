@@ -51,6 +51,7 @@ class Transaction:
     created_at: str
     updated_at: str
     categorized_by: str | None = None  # actor de la categoría manual: 'cli' | 'mcp'
+    external_id: str | None = None  # id del banco (TR CSV)
 
     @property
     def by_claude(self) -> bool:
@@ -90,6 +91,8 @@ class ImportResult:
     categorized: int
     already_imported: bool
     warnings: list[str]
+    rows_linked: int = 0  # ya existían (de otra fuente) y se han enlazado a su id del banco
+    trades_new: int = 0
 
 
 @dataclass(frozen=True)

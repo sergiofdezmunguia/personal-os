@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
+from personal_os.finance import investments
 from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
@@ -44,6 +46,8 @@ y Apple Calendario. Los datos viven en el Personal OS; Apple es la interfaz.
   proponer, mira list_category_rules para no duplicar. Para comercios sueltos (que no se
   repiten) usa categorize_transactions: queda marcado como «categorizado por Claude» y nunca
   pisa lo que el usuario puso a mano. Si no sabes qué es un comercio, pregunta.
+- Inversiones: investments_overview (cartera, plan de inversión, aportaciones y patrimonio
+  neto). El valor de mercado sale solo de la valoración que sube el usuario (PDF de TR).
 - Cierre mensual: finance_month_close dice si faltan extractos, qué queda sin categoría, la
   comparación con el mes anterior y si cuadran intereses y saveback.
 - Tras crear o modificar, llama a sync_apple. Calendario se actualiza al momento;
@@ -380,7 +384,50 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             ],
         }
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def investments_overview(months: int = 12) -> dict[str, Any]:
+        """Inversiones y patrimonio (solo lectura; importes en céntimos): cartera de la última
+        valoración frente a lo invertido, plan de inversión deducido y su cumplimiento por mes,
+        y patrimonio neto a fin de mes (efectivo + inversiones; `investments_basis` dice si
+        van a valor de mercado o a coste)."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        months = max(1, min(months, 60))
+
+        def plain(obj, **extra):
+            return {**json_safe(dataclasses.asdict(obj)), **extra}
+
+        return {
+            "today": today,
+            "portfolios": [
+                plain(p, gain_cents=p.gain_cents, gain_pct=p.gain_pct)
+                for p in investments.portfolios(svc)
+            ],
+            "plan": [plain(p) for p in investments.deduce_plan(svc, today)],
+            "contributions": [
+                plain(c, plan_ok=c.plan_ok, net_cents=c.net_cents)
+                for c in investments.contributions(svc, months=months, today=today)
+            ],
+            "net_worth": [
+                plain(n, cash_cents=n.cash_cents, total_cents=n.total_cents)
+                for n in investments.net_worth(svc, months=months, today=today)
+            ],
+        }
+
     return server
+
+
+def json_safe(value: Any) -> Any:
+    """Decimal → str (participaciones y precios exactos)."""
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [json_safe(v) for v in value]
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
 
 
 def main() -> None:
