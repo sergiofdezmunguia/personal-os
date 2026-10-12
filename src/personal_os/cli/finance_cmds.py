@@ -13,7 +13,9 @@ from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
-from personal_os.finance.importers import StatementError, detect
+from personal_os.finance import investments as inv
+from personal_os.finance.importers import StatementError, describe, detect
+from personal_os.finance.investments import import_document
 from personal_os.finance.models import FinanceError, fmt_eur
 
 app = typer.Typer(
@@ -48,27 +50,25 @@ def import_(
     dry_run: bool = typer.Option(False, "--dry-run", help="Solo analiza; no guarda nada"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Importa un extracto (Santander .xls o PDF «Extracto de cuenta» de Trade Republic). Idempotente: reimportar no duplica."""
+    """Importa un extracto: Santander .xls; Trade Republic PDF «Extracto de cuenta», CSV «Exportación de transacción» o PDF «Extracto del patrimonio neto». Idempotente: reimportar no duplica."""
     data = file.read_bytes()
     try:
-        statement = detect(data, file.name)
+        parsed = detect(data, file.name)
     except StatementError as exc:
         fail(str(exc))
-    period = statement.period
+    period = parsed.period
     if dry_run:
-        typer.echo(
-            f"{statement.source}: {statement.account_name} ····{statement.last4} · "
-            f"{len(statement.transactions)} movimientos · {period[0]} → {period[1]}"
-        )
-        for w in statement.warnings:
+        typer.echo(describe(parsed))
+        for w in parsed.warnings:
             typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
         typer.echo("(simulación: no se ha guardado nada)")
         return
     svc = _svc()
     try:
-        result = svc.import_statement(
+        result = import_document(
+            svc,
             ChangeContext.cli(),
-            statement,
+            parsed,
             file_name=file.name,
             file_sha256=hashlib.sha256(data).hexdigest(),
         )
@@ -78,15 +78,25 @@ def import_(
         echo_json(result)
         return
     typer.echo(f"✓ {result.account.label} · {period[0]} → {period[1]}")
-    typer.echo(
-        f"  {result.rows_new} nuevos · {result.rows_duplicate} ya existían · "
-        f"{result.categorized} categorizados por reglas"
-    )
+    typer.echo(f"  {_result_counts(result)}")
     for w in result.warnings:
         typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
     pending = len(svc.list_transactions(uncategorized=True, limit=None))
     if pending:
         typer.echo(f"  {pending} movimientos sin categoría: `pos finance list --uncategorized`")
+
+
+def _result_counts(r) -> str:
+    if r.already_imported:
+        return "ya estaba importado"
+    parts = [f"{r.rows_new} nuevos", f"{r.rows_duplicate} ya existían"]
+    if r.rows_linked:
+        parts.append(f"{r.rows_linked} enlazados con lo ya importado")
+    if r.trades_new:
+        parts.append(f"{r.trades_new} operaciones")
+    if r.categorized:
+        parts.append(f"{r.categorized} categorizados por reglas")
+    return " · ".join(parts)
 
 
 @app.command("inbox")
@@ -112,10 +122,7 @@ def inbox(as_json: bool = typer.Option(False, "--json")) -> None:
         if r and r.already_imported:
             typer.echo(f"= {item.file_name}: ya estaba importado")
         elif r:
-            typer.echo(
-                f"✓ {item.file_name} → {r.account.label}: {r.rows_new} nuevos, "
-                f"{r.categorized} categorizados por reglas"
-            )
+            typer.echo(f"✓ {item.file_name} → {r.account.label}: {_result_counts(r)}")
             for w in r.warnings:
                 typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
         if item.error:
@@ -360,6 +367,140 @@ def summary(
         typer.echo(f"  {c.name:<32} {fmt_eur(c.total_cents):>14}  {c.count:>3}")
         for sub in c.children:
             typer.echo(f"    · {sub.name:<28} {fmt_eur(sub.total_cents):>14}  {sub.count:>3}")
+
+
+# --------------------------------------------------------------------------- inversiones
+
+
+def _today() -> str:
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        return application.clock.now().astimezone(tz).date().isoformat()
+    finally:
+        application.db.close()
+
+
+def _pct_signed(v: float | None) -> str:
+    return "" if v is None else f"{v:+.2f} %".replace(".", ",")
+
+
+@app.command("portfolio")
+def portfolio(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Cartera: valor de la última valoración frente a lo invertido (coste medio)."""
+    ports = inv.portfolios(_svc())
+    if as_json:
+        echo_json(
+            [{**p.__dict__, "gain_cents": p.gain_cents, "gain_pct": p.gain_pct} for p in ports]
+        )
+        return
+    if not ports:
+        typer.echo("Sin inversiones: importa la exportación CSV de Trade Republic.")
+    for p in ports:
+        when = f"valoración del {p.as_of}" if p.as_of else "sin valoración"
+        typer.echo(f"{p.label} · {when}")
+        for x in p.positions:
+            value = fmt_eur(x.value_cents) if x.value_cents is not None else "—"
+            typer.echo(
+                f"  {x.name[:34]:<34} {value:>14}  coste {fmt_eur(x.cost_cents):>13}"
+                f"  {_pct_signed(x.gain_pct):>9}"
+            )
+        typer.echo("")
+        if p.value_cents is not None:
+            typer.echo(f"  Valor          {fmt_eur(p.value_cents):>14}")
+        typer.echo(f"  Invertido      {fmt_eur(p.cost_cents):>14}")
+        if p.gain_cents is not None:
+            typer.echo(f"  Resultado      {fmt_eur(p.gain_cents):>14}  {_pct_signed(p.gain_pct)}")
+        if p.cash_cents is not None:
+            typer.echo(f"  Efectivo       {fmt_eur(p.cash_cents):>14}  (a la misma fecha)")
+        if p.invested_after_cents:
+            typer.echo(
+                f"  Desde la valoración: {fmt_eur(p.invested_after_cents)} invertidos (a coste)"
+            )
+        if p.dividends_cents or p.realized_cents:
+            typer.echo(
+                f"  Dividendos netos {fmt_eur(p.dividends_cents)} · ventas: resultado "
+                f"{fmt_eur(p.realized_cents)}"
+            )
+        for w in p.warnings:
+            typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+
+
+@app.command("contributions")
+def contributions(
+    months: int = typer.Option(12, "--months", "-n", min=1, max=120),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Aportaciones por mes (plan de inversión y compras sueltas) y si se cumple el plan."""
+    svc = _svc()
+    today = _today()
+    plan = inv.deduce_plan(svc, today)
+    rows = inv.contributions(svc, months=months, today=today)
+    if as_json:
+        echo_json({"plan": plan, "months": [{**r.__dict__, "plan_ok": r.plan_ok} for r in rows]})
+        return
+    if plan:
+        typer.echo(f"Plan de inversión (deducido de los últimos {inv.PLAN_LOOKBACK_MONTHS} meses):")
+        for p in plan:
+            typer.echo(
+                f"  {p.name[:34]:<34} {fmt_eur(p.amount_cents):>11} × {p.per_month}/mes"
+                f"  ≈ {fmt_eur(p.monthly_cents)}/mes"
+            )
+        typer.echo(
+            f"  {'Total':<34} {'':>11}         ≈ {fmt_eur(sum(p.monthly_cents for p in plan))}/mes"
+        )
+        typer.echo("")
+    names = {p.isin: p.name for p in plan}
+    typer.echo(f"  {'Mes':<8} {'Plan':>13} {'Sueltas':>13} {'Ventas':>13}  Plan")
+    for r in rows:
+        status = (
+            "en curso"
+            if r.in_progress
+            else "—"
+            if r.plan_ok is None
+            else "✓"
+            if r.plan_ok
+            else "✗ " + ", ".join(names.get(i, i)[:18] for i in r.plan_short)
+        )
+        typer.echo(
+            f"  {r.month:<8} {fmt_eur(r.plan_cents):>13} {fmt_eur(r.manual_cents):>13}"
+            f" {fmt_eur(r.sold_cents):>13}  {status}"
+        )
+
+
+@app.command("networth")
+def networth(
+    months: int = typer.Option(12, "--months", "-n", min=1, max=120),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Patrimonio neto a fin de cada mes: efectivo de todas las cuentas + inversiones."""
+    points = inv.net_worth(_svc(), months=months, today=_today())
+    if as_json:
+        echo_json(
+            [
+                {**p.__dict__, "cash_cents": p.cash_cents, "total_cents": p.total_cents}
+                for p in points
+            ]
+        )
+        return
+    shown = [p for p in points if not p.missing]
+    if len(shown) < len(points):
+        typer.echo(f"(se omiten {len(points) - len(shown)} meses sin datos de todas las cuentas)")
+    typer.echo(f"  {'Mes':<8} {'Efectivo':>14} {'Inversiones':>14} {'Total':>14}")
+    prev = None
+    for p in shown:
+        mark = "" if p.investments_basis == "mercado" else " ·"
+        delta = "" if prev is None else f"  {fmt_eur(p.total_cents - prev):>13}"
+        typer.echo(
+            f"  {p.month:<8} {fmt_eur(p.cash_cents):>14} {fmt_eur(p.investments_cents):>14}"
+            f"{mark:2} {fmt_eur(p.total_cents):>14}{delta}"
+        )
+        prev = p.total_cents
+    if any(p.investments_basis == "coste" for p in shown):
+        typer.echo(
+            "  · inversiones a coste: no hay valoración de esa semana (sube el PDF "
+            "«Extracto del patrimonio neto» a fin de mes)"
+        )
 
 
 # --------------------------------------------------------------------------- reglas

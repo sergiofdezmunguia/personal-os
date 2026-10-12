@@ -37,10 +37,16 @@ lo que toca). Mes por defecto: el anterior al actual.
    abonados. Son estimaciones: el banco puede aplicar retención fiscal, topes o exclusiones.
    Señala solo desviaciones grandes o cambios respecto a meses anteriores; si `received` es
    null, aún no se ha abonado (llega el mes siguiente).
-5. **Resumen para el usuario** (breve, en español):
+5. **Inversiones** (`investments_overview`): aportado en el mes frente al plan
+   (`contributions[].plan_ok`; si es `false`, qué ETF quedó corto), valor de la cartera y
+   resultado según la última valoración, y patrimonio neto frente al mes anterior. Si la
+   última valoración no es de fin de mes, recuerda subir el PDF «Extracto del patrimonio
+   neto» de TR (y la exportación CSV completa) a la bandeja.
+6. **Resumen para el usuario** (breve, en español):
    - Ingresos, gastos y neto, frente al mes anterior.
    - Las 3–5 categorías que más se han movido y por qué (si se ve en los movimientos).
    - Intereses y saveback.
+   - Inversiones: plan cumplido o no, cartera y patrimonio neto.
    - Lo que queda pendiente del usuario: reglas propuestas (`pos finance rule approve --all`),
      preguntas sobre comercios, extractos que faltan.
    - Cuántos movimientos categorizaste tú (`pos finance list --by-claude -m AAAA-MM` para

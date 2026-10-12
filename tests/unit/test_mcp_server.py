@@ -55,8 +55,10 @@ def test_exposes_minimal_toolset(server):
         "propose_category_rule",
         "categorize_transactions",
         "finance_month_close",
+        "investments_overview",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
+    assert tools["investments_overview"].annotations.read_only_hint is True
 
 
 def test_create_list_complete_recurring_task(server):
