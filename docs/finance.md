@@ -18,7 +18,9 @@ Sin Claude también funciona: `pos sync` (o `pos finance inbox`) importa la band
 ### Bandeja de extractos
 
 `[finance].inbox_dir` en `config.toml` (la ruta real, `/mnt/c/Users/<usuario>/iCloudDrive/…`).
-Cada `.xls`/`.pdf` se importa (idempotente) y se mueve a `importados/AAAA-MM/`. Lo que no se
+Cada fichero se importa (idempotente) y se mueve a `importados/AAAA-MM/`; si se subió hace
+menos de 10 minutos se importa igual pero se archiva en la siguiente sync (si iCloud aún lo
+está sincronizando, deshace el movimiento). Lo que no se
 reconoce o no cuadra se queda en la bandeja y `pos sync`/`pos doctor` avisan; nunca se borra
 nada. Los extractos archivados son datos bancarios sin cifrar en iCloud Drive: bórralos
 cuando quieras (los datos ya están en la base y en los backups cifrados).

@@ -384,3 +384,18 @@ def test_csv_strips_the_null_suffix_tr_adds():
     ]
     txs = trade_republic_csv.parse(fake.build_csv(rows)).cash.transactions
     assert txs[-1].description == "Transacción con tarjeta: Kiosco Ficticio"
+
+
+def test_inbox_waits_before_archiving_fresh_files(svc, tmp_path):
+    import os
+    import time
+
+    f = tmp_path / "Exportación de transacción.csv"
+    f.write_bytes(fake.build_csv())
+    now = time.time()
+    report = process_inbox(svc, CLI, tmp_path, today=TODAY, now=now)
+    (item,) = report.items
+    assert item.result.rows_new == len(fake.ROWS) and item.deferred and f.exists()
+    os.utime(f, (now - 3600, now - 3600))  # ya asentado en iCloud
+    (item,) = process_inbox(svc, CLI, tmp_path, today=TODAY, now=now).items
+    assert item.result.already_imported and item.archived_to and not f.exists()
