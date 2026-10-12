@@ -62,9 +62,9 @@ Reglas impuestas por `lint-imports`:
 
 - `.mcp.json` registra `personal-os` (`uv run pos-mcp`). Herramientas: `create_task`,
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
-  `sync_apple`, `list_transactions`, `finance_summary`, `list_category_rules`,
-  `propose_category_rule`. Actor de auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las
-  existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
+  `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
+  `list_category_rules`, `propose_category_rule`, `categorize_transactions`. Actor de
+  auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
   `format_python.py` (ruff tras cada edición), `check_on_stop.py` (`scripts/check.sh` al
@@ -82,11 +82,15 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006.
+- Uso: `docs/finance.md`. Decisiones: ADR 0006 y 0007.
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
 - Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
+- Categoría directa desde MCP (`categorize_transactions`) ⇒ `categorized_by = 'mcp'`,
+  revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
+- Cierre mensual: skill `.claude/skills/monthly-close/` + `finance/close.py` (solo lectura);
+  bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
 - **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`). Nunca leer extractos
   reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 

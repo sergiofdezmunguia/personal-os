@@ -183,11 +183,11 @@ def _print_report(report) -> None:
 @sync_app.callback()
 def sync_run(
     ctx: typer.Context,
-    only: str | None = typer.Option(None, "--only", help="reminders | calendar"),
+    only: str | None = typer.Option(None, "--only", help="reminders | calendar | finance"),
     no_push: bool = typer.Option(False, "--no-push", help="Solo recibe cambios"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Sincroniza con Recordatorios y Calendario (`pos sync status` para el estado)."""
+    """Sincroniza con Recordatorios y Calendario e importa la bandeja de extractos (`pos sync status`)."""
     if ctx.invoked_subcommand is not None:
         return
     application = wiring.open_app()

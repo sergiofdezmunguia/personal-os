@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from personal_os import bootstrap
 from personal_os.core import backup as bk
@@ -26,6 +27,7 @@ STALE_MAILBOX = timedelta(hours=24)
 STALE_SNAPSHOT = timedelta(hours=48)
 STALE_BACKUP = timedelta(hours=48)
 STALE_FINANCE_IMPORT = timedelta(days=35)
+CLOSE_GRACE_DAYS = 7  # días del mes siguiente para subir extractos antes de avisar
 
 
 @dataclass(frozen=True)
@@ -276,10 +278,18 @@ def check_finance(cfg: Config, clock: Clock) -> list[Check]:
         row = db.one("SELECT MAX(imported_at) AS last, COUNT(*) AS n FROM fin_imports")
         pending = db.one("SELECT COUNT(*) AS n FROM fin_transactions WHERE category IS NULL")["n"]
         proposed = db.one("SELECT COUNT(*) AS n FROM fin_rules WHERE status = 'proposed'")["n"]
+        today = clock.now().astimezone(ZoneInfo(cfg.timezone)).date()
+        prev_month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        prev_pending = db.one(
+            "SELECT COUNT(*) AS n FROM fin_transactions"
+            " WHERE category IS NULL AND booking_date LIKE ?",
+            (prev_month + "-%",),
+        )["n"]
     finally:
         db.close()
+    inbox = _check_finance_inbox(cfg)
     if not row["n"]:
-        return [Check("finanzas", SKIP, "Sin extractos importados")]
+        return [Check("finanzas", SKIP, "Sin extractos importados"), *inbox]
     age = _age(clock, row["last"])
     out = [
         Check(
@@ -300,7 +310,46 @@ def check_finance(cfg: Config, clock: Clock) -> list[Check]:
                 "uv run pos finance rule list --status proposed",
             )
         )
-    return out
+    if prev_pending and today.day > CLOSE_GRACE_DAYS:
+        out.append(
+            Check(
+                "finanzas",
+                WARN,
+                f"{prev_month} sin cerrar: {prev_pending} movimientos sin categoría",
+                f"Pide a Claude el cierre mensual (/monthly-close) o `uv run pos finance close {prev_month}`",
+            )
+        )
+    return out + inbox
+
+
+def _check_finance_inbox(cfg: Config) -> list[Check]:
+    from personal_os.finance.inbox import pending_files
+
+    inbox = cfg.finance.inbox_dir
+    if inbox is None:
+        return [
+            Check(
+                "extractos",
+                WARN,
+                "Bandeja de extractos sin configurar",
+                f"Añade [finance].inbox_dir en {cfg.config_file} (ver docs/finance.md)",
+            )
+        ]
+    if not inbox.is_dir():
+        return [
+            Check("extractos", FAIL, f"Bandeja no accesible: {inbox}", "¿iCloud Drive arrancado?")
+        ]
+    files = pending_files(inbox)
+    if files:
+        return [
+            Check(
+                "extractos",
+                WARN,
+                f"{len(files)} ficheros en la bandeja sin importar",
+                "uv run pos finance inbox",
+            )
+        ]
+    return [Check("extractos", OK, f"Bandeja vacía ({inbox})")]
 
 
 def check_mailbox(cfg: Config, clock: Clock) -> list[Check]:

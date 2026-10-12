@@ -53,6 +53,8 @@ def test_exposes_minimal_toolset(server):
         "finance_summary",
         "list_category_rules",
         "propose_category_rule",
+        "categorize_transactions",
+        "finance_month_close",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
 
