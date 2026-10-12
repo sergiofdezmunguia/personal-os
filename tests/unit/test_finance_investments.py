@@ -375,3 +375,12 @@ def test_doctor_investments_check(app, svc, clock):
     assert check()[0].status == OK
     clock.advance(days=45)
     assert check()[0].status == WARN and "2026-09-30" in check()[0].message
+
+
+def test_csv_strips_the_null_suffix_tr_adds():
+    rows = [
+        *fake.ROWS,
+        fake.Row("2026-10-03", "CARD_TRANSACTION", "-1.00", "Kiosco Ficticionull", tid="n-1"),
+    ]
+    txs = trade_republic_csv.parse(fake.build_csv(rows)).cash.transactions
+    assert txs[-1].description == "Transacción con tarjeta: Kiosco Ficticio"
