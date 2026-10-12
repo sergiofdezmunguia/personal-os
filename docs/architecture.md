@@ -1,23 +1,41 @@
-# Arquitectura — vertical slice Tareas + Calendario con Apple
+# Arquitectura
 
 ```
-                ┌────────────────────────── PERSONAL OS (WSL) ──────────────────────────┐
-                │  CLI (pos)                                                             │
-                │    │                                                                   │
-                │  DOMINIO  tasks (Task, Occurrence, recurrencias)   calendar (Event)    │
-                │    │            ▲                                         ▲            │
-                │  SYNC   RemindersSync (asíncrono)          CalendarSync (síncrono)     │
-                │         links · operations · inbox ledger · runs · conflictos          │
-                │    │                                                                   │
-                │  ADAPTERS  reminders_mailbox (pos-reminders/1)   calendar_caldav+ical   │
-                │  CORE      SQLite · migraciones · eventos/auditoría · config · secretos │
-                └──────────────┬───────────────────────────────────────────┬────────────┘
-                               │ ficheros JSON                             │ HTTPS CalDAV
-                 iCloud Drive (iCloud para Windows)                 caldav.icloud.com
-                               │                                           │
-         iPhone: Atajos (automatización) → Scriptable                iCloud Calendar
-                 "Personal OS Sync" ⇄ EventKit ⇄ Recordatorios       → Calendario (avisos)
+                      ┌──────────────────────────── PERSONAL OS (WSL) ─────────────────────────────┐
+ Claude Code ──MCP──▶ │ INTERFACES  CLI `pos` · servidor MCP `pos-mcp` · skills (cierre mensual)   │
+ (skills, hooks)      │ OPS         doctor · backups (age) · drill · panel «Pulso del mes»         │
+                      │ BOOTSTRAP   composition root: conecta servicios, adaptadores y config      │
+                      │ ADAPTERS    buzón JSON (Recordatorios) · CalDAV + iCalendar                │
+                      │ SYNC        RemindersSync · CalendarSync · enlaces · operaciones · runs    │
+                      │ DOMINIO     tasks · calendar · finance (extractos, reglas, cierre,         │
+                      │             inversiones, patrimonio, análisis de gasto)                    │
+                      │ CORE        SQLite · migraciones · eventos/auditoría · config · secretos   │
+                      └────▲──────────────────────┬──────────────────────────┬─────────────────────┘
+  Programador de tareas    │ `pos sync`           │ ficheros                 │ HTTPS CalDAV
+  de Windows (3×/día) ─────┘                      ▼                          ▼
+                     iCloud Drive (iCloud para Windows)                caldav.icloud.com
+                     · Scriptable/personal-os: buzón + panel                  │
+                     · PersonalOS-extractos: bandeja de extractos       iCloud Calendar
+                     · PersonalOS-backups: copias cifradas (age)        → Calendario (avisos)
+                                     │
+        iPhone: Atajos (3×/día y al cerrar Recordatorios) → Scriptable «Personal OS Sync»
+                  ⇄ EventKit ⇄ Recordatorios
+                Scriptable «Personal OS Panel» → panel con JavaScript
+                Archivos → subir extractos (y ver el panel sin JavaScript)
 ```
+
+Flujos principales:
+
+- **Tareas y eventos**: CLI o Claude (MCP) → dominio → `pos sync` → buzón (Recordatorios) o
+  CalDAV (Calendario). Detalle abajo.
+- **Finanzas**: el usuario deja extractos (Santander `.xls/.xlsx`; Trade Republic CSV y PDF de
+  patrimonio) en la bandeja → `pos sync` los importa (idempotente), categoriza por reglas y
+  regenera el panel. Claude propone reglas y categoriza lo suelto en el cierre mensual
+  (ADR 0006–0009).
+- **Operación**: `pos sync` hace un backup diario cifrado fuera del disco; `pos doctor`
+  revisa todo (sync, bridge, backups, extractos, inversiones).
+
+Pendiente: open banking (PSD2) como fuente automática de movimientos (ADR 0007).
 
 ## Por qué dos canales
 

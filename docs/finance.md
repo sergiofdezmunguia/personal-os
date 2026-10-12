@@ -124,3 +124,23 @@ Desde Claude (MCP): `finance_summary`, `finance_month_close`, `investments_overv
 `list_category_rules`, `propose_category_rule` (queda pendiente de tu aprobación) y
 `categorize_transactions` (comercios sueltos; queda marcado como de Claude y nunca cambia
 lo que tú pusiste a mano).
+
+## Panel «Pulso del mes»
+
+`uv run pos panel` lo genera y lo abre en el navegador. También se regenera solo tras cada
+`pos sync` (3 veces al día con la tarea de Windows). Responde a:
+
+- **¿Cómo voy este mes?** Gasto variable hasta hoy frente a lo que sueles llevar a estas
+  alturas (media de los 3 últimos meses cerrados), fijos pagados, previsión de gasto y de
+  ahorro a fin de mes.
+- **¿Dónde se está yendo?** Cada categoría variable este mes frente a lo habitual a este día.
+- **¿En qué gasto más?** Ranking con su peso sobre el gasto y la nómina; toca una categoría
+  para ver sus comercios y un comercio para ver sus movimientos.
+- **¿Dónde está mi dinero?** Reparto de un mes tipo (fijos, variable, inversión, ahorro en
+  efectivo) y patrimonio por tipo.
+- **¿Dónde debería centrarme?** Los 3 mayores gastos variables y cuánto ahorrarías
+  recortando un 20 %.
+- **Mes a mes**: ingresos frente a gasto (12 meses) y patrimonio neto.
+
+En el iPhone: Scriptable → **Personal OS Panel** (ver `docs/setup/iphone.md`). Definiciones
+en ADR 0009.

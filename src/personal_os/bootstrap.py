@@ -29,6 +29,8 @@ BRIDGE_SOURCE = (
     Path(__file__).resolve().parents[2] / "bridge" / "scriptable" / "personal-os-sync.js"
 )
 BRIDGE_SCRIPT_NAME = "Personal OS Sync.js"
+PANEL_VIEWER_SOURCE = BRIDGE_SOURCE.with_name("personal-os-panel.js")
+PANEL_VIEWER_NAME = "Personal OS Panel.js"  # abre el panel en el iPhone (visor con JavaScript)
 
 
 @dataclass
