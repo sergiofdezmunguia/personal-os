@@ -46,7 +46,7 @@ CASES = {
 def test_script_awaits_main_for_shortcuts():
     # Sin `await`, Atajos da el script por terminado sin evento ni respuesta.
     src = SCRIPT.read_text(encoding="utf-8")
-    assert "else await main();" in src
+    assert "if (IN_SCRIPTABLE) await main();" in src
     # Desde Atajos la frase llega en Texts (plainTexts) o en Parameter: nunca hay ventanas.
     assert "(args.plainTexts || []).length > 0" in src and "!config.runsInApp" in src
 
@@ -72,7 +72,8 @@ const g = {
   config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
   Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
   CalendarEvent: class { save() { saved.push(this.title); } },
-  Calendar: {}, Alert: class { constructor() { alerts++; } }, module: undefined,
+  Calendar: {}, Alert: class { constructor() { alerts++; } },
+  module: { exports: {} },  // Scriptable define `module` en todos los scripts
 };
 new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g), src)(
   ...Object.values(g)).then(() => console.log(JSON.stringify({ saved, output, alerts })));

@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`.
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 4.
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -253,7 +253,9 @@ async function main() {
   Script.complete();
 }
 
-// Scriptable da el script por terminado al acabar el código de arriba: hay que esperar a
-// main() o, desde Atajos, termina antes de crear el evento y de devolver la respuesta.
-if (typeof module !== "undefined" && module.exports) module.exports = { parseEvent, describe };
-else await main();
+// Scriptable también define `module`: lo que distingue el iPhone de los tests es la API de
+// Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
+// script termina antes de crear el evento y de devolver la respuesta.
+const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe };
+if (IN_SCRIPTABLE) await main();
