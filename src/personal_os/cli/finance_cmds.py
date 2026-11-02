@@ -136,6 +136,40 @@ def inbox(as_json: bool = typer.Option(False, "--json")) -> None:
         typer.echo(f"{pending} movimientos sin categoría: `pos finance list --uncategorized`")
 
 
+@app.command("bank-sync")
+def bank_sync(
+    days: int = typer.Option(wiring.BANK_DAYS, "--days", help="Días hacia atrás a pedir"),
+    force: bool = typer.Option(
+        False, "--force", help="Consulta aunque la última sea reciente (gasta cupo PSD2)"
+    ),
+) -> None:
+    """Trae saldo y movimientos de los bancos conectados por open banking (también en `pos sync`)."""
+    application = wiring.open_app()
+    try:
+        report = wiring.bank_sync(application, days=days, force=force)
+    finally:
+        application.db.close()
+    if report is None:
+        fail("Open banking no configurado (docs/finance.md, «Open banking»)")
+    if report.stats.get("skipped_recent"):
+        typer.echo(
+            f"Última consulta hace menos de {wiring.BANK_MIN_HOURS} h; nada que hacer"
+            " (usa --force si de verdad hace falta)."
+        )
+    else:
+        new = report.stats.get("transactions_new", 0)
+        linked = report.stats.get("transactions_linked", 0)
+        typer.echo(
+            f"✓ {report.stats.get('accounts', 0)} cuentas · {new} nuevos · {linked} enlazados"
+        )
+    for w in report.warnings:
+        typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+    for e in report.errors:
+        typer.secho(f"  error: {e}", fg=typer.colors.RED)
+    if report.errors:
+        raise typer.Exit(1)
+
+
 @app.command("close")
 def close(
     month: str | None = typer.Argument(None, help="YYYY-MM (por defecto, el mes anterior)"),

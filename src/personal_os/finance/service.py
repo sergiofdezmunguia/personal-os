@@ -19,7 +19,7 @@ from personal_os.core.clock import Clock, to_iso
 from personal_os.core.db import Database
 from personal_os.core.events import ChangeContext, EventLog
 from personal_os.core.ids import new_id
-from personal_os.finance.importers import ParsedStatement
+from personal_os.finance.importers import PROVISIONAL, ParsedStatement
 from personal_os.finance.models import (
     Account,
     Category,
@@ -59,6 +59,25 @@ def _fingerprint(account_id: str, tx, n: int) -> str:
         )
     )
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _eod_offset(existing: dict, incoming: dict, days: list[str]) -> int:
+    """Diferencia de saldo al cierre (banco − importado) en los días comunes.
+
+    Una diferencia constante significa que los movimientos casan y solo el punto de partida
+    del saldo importado era otro (p. ej. un historial que no empieza en 0): se acepta y se
+    devuelve. Si con 5 o más días menos del 80 % comparten la misma diferencia, faltan o
+    sobran movimientos y se rechaza."""
+    diffs = [incoming[d] - existing[d] for d in days]
+    if not diffs:
+        return 0
+    offset, hits = Counter(diffs).most_common(1)[0]
+    if len(diffs) >= 5 and hits / len(diffs) < 0.8:
+        raise FinanceError(
+            f"El saldo que da el banco no cuadra con lo ya importado ({hits} de {len(diffs)}"
+            " días con la misma diferencia); no se importa nada."
+        )
+    return offset if hits == len(diffs) or len(diffs) >= 5 else 0
 
 
 def rule_matches(rule: Rule, description: str, amount_cents: int) -> bool:
@@ -240,9 +259,16 @@ class FinanceService:
             counts: Counter = Counter()
             new_ids = []
             linked = self._link_existing(account.id, statement, now)
+            already, offset = self._match_provisional(account.id, statement, linked)
+            if offset:
+                warnings.append(
+                    f"El saldo de lo importado antes difiere del que da el banco en "
+                    f"{offset / 100:+.2f} € (constante: faltaba algo al principio del "
+                    "historial). Desde hoy manda el saldo del banco."
+                )
             claimed: set[str] = set()
             for tx in statement.transactions:
-                if tx.external_id in linked:
+                if tx.external_id in linked or tx.external_id in already:
                     continue
                 if not tx.external_id and self._same_movement(account.id, tx, claimed):
                     continue
@@ -381,7 +407,7 @@ class FinanceService:
         existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
         free: dict[int, list] = {}
         for r in rows:
-            if r["external_id"] is None:
+            if r["external_id"] is None or r["external_id"].startswith(PROVISIONAL):
                 free.setdefault(r["amount_cents"], []).append(r)
 
         pending = [t for t in incoming if t.external_id not in known]
@@ -394,6 +420,10 @@ class FinanceService:
                 day = date.fromisoformat(tx.booking_date)
                 for r in free.get(tx.amount_cents, []):
                     if r["id"] in used:
+                        continue
+                    # Un id provisional solo adopta movimientos sin id; uno real, también
+                    # los provisionales (el CSV de TR sustituye a lo llegado por open banking).
+                    if r["external_id"] and tx.external_id.startswith(PROVISIONAL):
                         continue
                     if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
                         matches[tx.external_id] = r["id"]
@@ -425,6 +455,81 @@ class FinanceService:
                 (ext, now, txn_id),
             )
         return set(matches)
+
+    def _match_provisional(
+        self, account_id: str, st: ParsedStatement, linked: set[str]
+    ) -> set[str]:
+        """Movimientos con id provisional que ya están en la cuenta (de otra fuente o de una
+        consulta anterior en la que el día no cabía entero): mismo importe a
+        ±`match_existing_days`, emparejando primero por el mismo día. No se tocan.
+
+        Devuelve también la diferencia constante de saldo con lo importado (ver `_eod_offset`).
+        """
+        incoming = [
+            t
+            for t in st.transactions
+            if t.external_id
+            and t.external_id.startswith(PROVISIONAL)
+            and t.external_id not in linked
+        ]
+        if not incoming or st.match_existing_days <= 0:
+            return set(), 0
+        known = {
+            r["external_id"]
+            for r in self.db.all(
+                "SELECT external_id FROM fin_transactions"
+                " WHERE account_id = ? AND external_id LIKE ?",
+                (account_id, PROVISIONAL + "%"),
+            )
+        }
+        pending = [t for t in incoming if t.external_id not in known]
+        if not pending:
+            return set(), 0
+        first = min(t.booking_date for t in pending)
+        lo = date.fromordinal(date.fromisoformat(first).toordinal() - st.match_existing_days)
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents, balance_after_cents FROM fin_transactions"
+            " WHERE account_id = ? AND booking_date >= ? ORDER BY booking_date, rowid",
+            (account_id, lo.isoformat()),
+        )
+        # Lo ya reclamado por un id conocido de esta consulta no puede emparejarse otra vez.
+        taken = {
+            r["id"]
+            for r in self.db.all(
+                "SELECT id, external_id FROM fin_transactions WHERE account_id = ?"
+                " AND external_id LIKE ?",
+                (account_id, PROVISIONAL + "%"),
+            )
+            if r["external_id"] in {t.external_id for t in incoming}
+        }
+        by_amount: dict[int, list] = {}
+        for r in rows:
+            if r["id"] not in taken:
+                by_amount.setdefault(r["amount_cents"], []).append(r)
+        matched: dict[str, dict] = {}
+        used: set[str] = set()
+        for tolerance in range(st.match_existing_days + 1):
+            for tx in pending:
+                if tx.external_id in matched:
+                    continue
+                day = date.fromisoformat(tx.booking_date)
+                for r in by_amount.get(tx.amount_cents, []):
+                    if r["id"] in used:
+                        continue
+                    if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
+                        matched[tx.external_id] = r
+                        used.add(r["id"])
+                        break
+
+        existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
+        incoming_eod = {t.booking_date: t.balance_after_cents for t in st.transactions}
+        common = [
+            d
+            for d in {t.booking_date for t in pending if t.external_id in matched}
+            if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
+        ]
+        offset = _eod_offset(existing_eod, incoming_eod, common)
+        return set(matched), offset
 
     def _ensure_account(self, ctx: ChangeContext, st: ParsedStatement, now: str) -> Account:
         row = self.db.one(
