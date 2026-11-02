@@ -37,6 +37,9 @@ CASES = {
     "concierto el 30 de enero a las 21h": "🎵 Concierto · sábado 30 de enero, 21:00–0:00",
     "el lunes 9 tenía festivo": "🎉 Festivo · lunes 9 de noviembre (todo el día)",
     "el viernes 13 es el puente": "🎉 Puente · viernes 13 de noviembre (todo el día)",
+    "Oye Siri, nueve tengo festivo": "🎉 Festivo · lunes 9 de noviembre (todo el día)",
+    "apuntar el martes veinticuatro a las doce y media tengo médico": "🩺 Médico · martes 24 de noviembre, 12:30–13:30",
+    "cena para 4 personas el viernes a la una": "🍽️ Cena para 4 personas · viernes 6 de noviembre, 13:00–15:00",
     "algo raro sin fecha": "ERROR",
     "el martes 25 cena": "ERROR",  # no hay martes 25 en los próximos 3 meses: mejor preguntar
 }

@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 4.
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 5.
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -49,9 +49,27 @@ function addDays(d, n) {
   return x;
 }
 
+// Números dichos con palabras (el dictado de Siri a veces los deja así). «uno/una» solo en
+// «a la una»: si no, «tengo una cena» se leería como el día 1.
+const WORD_NUMBERS = ["", "", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve",
+  "diez", "once", "doce", "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho",
+  "diecinueve", "veinte", "veintiuno", "veintidos", "veintitres", "veinticuatro", "veinticinco",
+  "veintiseis", "veintisiete", "veintiocho", "veintinueve", "treinta"];
+
+// Limpia lo típico del dictado: «Oye Siri», «apuntar», números en palabras.
+function cleanDictation(text) {
+  let s = String(text || "").trim().replace(/\s+/g, " ");
+  s = s.replace(/^(oye|hey|ey)[ ,]+siri[ ,.:]*/i, "");
+  s = s.replace(/^(ap[uú]ntame|ap[uú]nta(r|me)?|pon(me)?|a[nñ]ade)[ ,.:]+/i, "");
+  const words = (w) => new RegExp(`\\b${w.split("").map((c) => ({ a: "[aá]", e: "[eé]", i: "[ií]", o: "[oó]", u: "[uú]" }[c] || c)).join("")}\\b`, "gi");
+  s = s.replace(/\btreinta y (uno|una)\b/gi, "31").replace(/\b(a la) (una|uno)\b/gi, "$1 1");
+  for (let n = WORD_NUMBERS.length - 1; n >= 2; n--) s = s.replace(words(WORD_NUMBERS[n]), String(n));
+  return s;
+}
+
 // Devuelve {title, emoji, start, end, allDay, warnings} o {error}.
 function parseEvent(text, now) {
-  const original = String(text || "").trim().replace(/\s+/g, " ");
+  const original = cleanDictation(text);
   if (!original) return { error: "No has dicho nada." };
   let t = fold(original); // misma longitud que original
   const cut = []; // tramos a quitar del título
@@ -75,7 +93,7 @@ function parseEvent(text, now) {
   const wd = take(wdRe.exec(t));
   const weekday = wd ? WEEKDAYS[wd[2]] : null;
 
-  const numRe = /\b(el )?(dia )?(\d{1,2})(?:\/(\d{1,2})(?:\/(\d{2,4}))?| de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?: de (\d{4}))?)?\b(?! ?(?::|\.|h\b|horas?\b|y |menos ))/;
+  const numRe = /\b(el )?(dia )?(\d{1,2})(?:\/(\d{1,2})(?:\/(\d{2,4}))?| de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?: de (\d{4}))?)?\b(?! ?(?::|\.|h\b|horas?\b|y |menos |personas?\b|euros?\b|€|min))/;
   // El número de día no puede ser la hora: se busca fuera de «a las …».
   const masked = t
     .replace(/\bde \d{1,2}(?:[:.]\d{2})? (?:a|hasta) (?:las? )?\d{1,2}(?:[:.]\d{2})?/g, (s) => " ".repeat(s.length))
