@@ -23,6 +23,7 @@ const CATEGORIES = [
   ["💼", ["reunion", "trabajo", "oficina", "entrevista", "call", "llamada", "cliente"], 60],
   ["🎓", ["clase", "master", "bootcamp", "examen", "curso", "tutoria", "ingles"], 60],
   ["🎂", ["cumple", "aniversario", "boda", "bautizo"], 0],
+  ["🎉", ["festivo", "vacaciones", "puente", "dia libre", "libre"], 0],
   ["💈", ["peluqueria", "barberia", "corte de pelo", "unas", "manicura"], 60],
   ["📌", ["banco", "notaria", "itv", "dni", "pasaporte", "hacienda", "ayuntamiento",
     "cita previa", "gestoria", "seguro", "taller", "abogado"], 60],
@@ -163,8 +164,9 @@ function parseEvent(text, now) {
   for (const [a, b] of cut) { if (a > pos) rest += original.slice(pos, a); pos = Math.max(pos, b); }
   rest += original.slice(pos);
   rest = rest.replace(/\s+/g, " ").trim();
-  const fillers = /^(oye |vale )?(tengo que ir al |tengo que ir a la |tengo que |tengo una? |tengo el |tengo la |tengo |apuntame |apunta |apuntar |ponme |pon |anade |recuerdame |hay |voy al |voy a la |voy a |me toca )+/i;
-  rest = rest.replace(new RegExp(fillers.source, "i"), (s) => "");
+  const fillers = /^(oye |vale )?(tengo que ir al |tengo que ir a la |tengo que |tengo una? |tengo el |tengo la |tengo |tenia |tendre |tenemos |es |sera |apuntame |apunta |apuntar |ponme |pon |anade |recuerdame |hay |voy al |voy a la |voy a |me toca )+/i;
+  const fm = new RegExp(fillers.source, "i").exec(fold(rest));
+  if (fm) rest = rest.slice(fm[0].length);
   let fr = fold(rest);
   const lead = /^(?:(el|la|los|las|un|una|al|a|de|del|en)\b ?)+/.exec(fr);
   if (lead) { rest = rest.slice(lead[0].length); fr = fold(rest); }
@@ -202,7 +204,10 @@ function describe(p) {
 
 async function main() {
   let text = String(args.shortcutParameter || (args.plainTexts && args.plainTexts[0]) || "");
-  const siri = config.runsWithSiri || config.runsInActionExtension || !!args.shortcutParameter;
+  // Desde Atajos/Siri no se puede mostrar ninguna ventana: se guarda directamente y se
+  // responde con setShortcutOutput. Solo se pregunta si se abre a mano en la app sin texto.
+  const fromShortcut = !!args.shortcutParameter || (args.plainTexts || []).length > 0;
+  const siri = fromShortcut || config.runsWithSiri || config.runsInActionExtension || !config.runsInApp;
   if (!text && !siri) {
     const a = new Alert();
     a.title = "Apuntar";

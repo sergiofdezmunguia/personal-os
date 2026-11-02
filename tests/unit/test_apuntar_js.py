@@ -35,6 +35,8 @@ CASES = {
     "comida familiar el domingo a mediodía": "🍽️ Comida familiar · domingo 8 de noviembre, 14:00–16:00",
     "tengo que ir al dentista el lunes a las 16:00 durante 2 horas": "🩺 Dentista · lunes 9 de noviembre, 16:00–18:00",
     "concierto el 30 de enero a las 21h": "🎵 Concierto · sábado 30 de enero, 21:00–0:00",
+    "el lunes 9 tenía festivo": "🎉 Festivo · lunes 9 de noviembre (todo el día)",
+    "el viernes 13 es el puente": "🎉 Puente · viernes 13 de noviembre (todo el día)",
     "algo raro sin fecha": "ERROR",
     "el martes 25 cena": "ERROR",  # no hay martes 25 en los próximos 3 meses: mejor preguntar
 }
@@ -43,7 +45,10 @@ CASES = {
 @pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
 def test_script_awaits_main_for_shortcuts():
     # Sin `await`, Atajos da el script por terminado sin evento ni respuesta.
-    assert "else await main();" in SCRIPT.read_text(encoding="utf-8")
+    src = SCRIPT.read_text(encoding="utf-8")
+    assert "else await main();" in src
+    # Desde Atajos la frase llega en Texts (plainTexts) o en Parameter: nunca hay ventanas.
+    assert "(args.plainTexts || []).length > 0" in src and "!config.runsInApp" in src
 
 
 def test_parse_spanish_phrases():
@@ -57,3 +62,32 @@ def test_parse_spanish_phrases():
     )
     got = dict(zip(phrases, json.loads(out.stdout), strict=True))
     assert got == CASES
+
+
+SHORTCUT_SIM = """
+const src = require("fs").readFileSync(process.argv[1], "utf8");
+const saved = []; let output = null, alerts = 0;
+const g = {
+  args: { plainTexts: [process.argv[2]], shortcutParameter: null },
+  config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
+  Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
+  CalendarEvent: class { save() { saved.push(this.title); } },
+  Calendar: {}, Alert: class { constructor() { alerts++; } }, module: undefined,
+};
+new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g), src)(
+  ...Object.values(g)).then(() => console.log(JSON.stringify({ saved, output, alerts })));
+"""
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_from_shortcuts_saves_and_answers_without_ui():
+    out = subprocess.run(
+        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), "tengo médico el martes 24 a las 12:30"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
+    )
+    got = json.loads(out.stdout)
+    assert got["saved"] == ["🩺 Médico"] and got["alerts"] == 0
+    assert got["output"].startswith("Apuntado: 🩺 Médico")
