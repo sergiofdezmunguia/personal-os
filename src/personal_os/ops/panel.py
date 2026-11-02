@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import shutil
 import subprocess
@@ -620,7 +621,32 @@ def generate(application) -> PanelResult:
     tmp = folder / (INDEX + ".tmp")
     tmp.write_text(page, encoding="utf-8")
     os.replace(tmp, target)
+    data = json.dumps(widget_data(panel, generated_at=now.isoformat(timespec="minutes")))
+    wtmp = folder / (WIDGET + ".tmp")
+    wtmp.write_text(data, encoding="utf-8")
+    os.replace(wtmp, folder / WIDGET)
     return PanelResult(target, len(page.encode()))
+
+
+WIDGET = "widget.json"  # cifras para el widget de Scriptable (citas y tareas las lee del iPhone)
+
+
+def widget_data(panel, *, generated_at: str) -> dict:
+    """Lo mínimo para el widget: ritmo del gasto variable del mes y patrimonio."""
+    p = panel.pace
+    return {
+        "version": 1,
+        "generated_at": generated_at,
+        "month": p.month,
+        "day": p.day,
+        "days": p.days,
+        "variable_cents": p.variable_cents,
+        "variable_habit_to_day_cents": p.variable_habit_to_day_cents,
+        "variable_habit_cents": p.variable_habit_cents,
+        "net_worth_cents": sum(h.cents for h in panel.holdings),
+        "holdings": [{"label": h.label, "cents": h.cents} for h in panel.holdings],
+        "uncategorized": panel.uncategorized,
+    }
 
 
 def open_in_browser(path: Path) -> bool:
