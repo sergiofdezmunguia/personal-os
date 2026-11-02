@@ -20,6 +20,7 @@ from personal_os.core.db import Database
 from personal_os.core.events import ChangeContext, EventLog
 from personal_os.core.ids import new_id
 from personal_os.finance.importers import PROVISIONAL, ParsedStatement
+from personal_os.finance.importers import mask_identifiers as mask_merchant
 from personal_os.finance.models import (
     Account,
     Category,
@@ -661,6 +662,82 @@ class FinanceService:
             if slug is None:
                 self._apply_rules(ctx, [txn.id])
         return self.get_transaction(txn.id)
+
+    def enrich_from_card_payments(
+        self,
+        ctx: ChangeContext,
+        payments: Iterable,
+        *,
+        placeholders: Iterable[str],
+        tz,
+        max_days: int = 3,
+    ) -> int:
+        """Pone el comercio a los movimientos que llegaron sin concepto (open banking de TR)
+        cruzándolos con los pagos de Apple Pay: mismo importe y fecha contable entre el día
+        del pago y `max_days` después (primero el más cercano). Determinista e idempotente:
+        un movimiento ya enriquecido deja de ser un hueco. Después aplica las reglas."""
+        holes = tuple(placeholders)
+        if not holes:
+            return 0
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents FROM fin_transactions"
+            f" WHERE description IN ({','.join('?' * len(holes))})"
+            " ORDER BY booking_date, rowid",
+            holes,
+        )
+        by_amount: dict[int, list] = {}
+        for r in rows:
+            by_amount.setdefault(r["amount_cents"], []).append(r)
+        used: set[str] = set()
+        changed: list[tuple[str, str]] = []
+        for p in sorted(payments, key=lambda p: p.at):
+            day = p.at.astimezone(tz).date()
+            if self._payment_consumed(p, day, max_days, used):
+                continue
+            best = None
+            for r in by_amount.get(-p.amount_cents, []):
+                if r["id"] in used:
+                    continue
+                lag = (date.fromisoformat(r["booking_date"]) - day).days
+                if 0 <= lag <= max_days and (best is None or lag < best[0]):
+                    best = (lag, r)
+            if best is not None:
+                used.add(best[1]["id"])
+                changed.append((best[1]["id"], p.merchant))
+        if not changed:
+            return 0
+        now = self._now()
+        with self.db.transaction():
+            for txn_id, merchant in changed:
+                self.db.execute(
+                    "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                    (mask_merchant(merchant), now, txn_id),
+                )
+            self.events.record(
+                ctx,
+                "finance.transactions.enriched",
+                "fin_transaction",
+                "*",
+                {"source": "applepay", "count": len(changed)},
+            )
+            self._apply_rules(ctx, [t for t, _ in changed])
+        return len(changed)
+
+    def _payment_consumed(self, p, day: date, max_days: int, used: set[str]) -> bool:
+        """¿Este pago ya puso su comercio en un movimiento (pasada anterior)? Mismo importe,
+        misma ventana y la descripción es ese comercio. Ese movimiento queda reservado."""
+        last = date.fromordinal(day.toordinal() + max_days)
+        for r in self.db.all(
+            "SELECT id, description FROM fin_transactions WHERE amount_cents = ?"
+            " AND booking_date BETWEEN ? AND ?",
+            (-p.amount_cents, day.isoformat(), last.isoformat()),
+        ):
+            if r["id"] not in used and normalize(r["description"]) == normalize(
+                mask_merchant(p.merchant)
+            ):
+                used.add(r["id"])
+                return True
+        return False
 
     # ---------------------------------------------------------------- reglas
 

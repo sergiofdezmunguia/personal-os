@@ -276,7 +276,38 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
             report = bank_sync(application)
             if report is not None:
                 outcome.reports.append(report)
+            report = applepay_enrich(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+def applepay_enrich(application: App):
+    """Comercio de Apple Pay → movimientos sin concepto. None si no hay registro de pagos."""
+    from personal_os.core.events import ChangeContext
+    from personal_os.core.ids import new_id
+    from personal_os.finance.importers import applepay
+    from personal_os.sync.store import SyncReport
+
+    inbox = application.config.finance.inbox_dir
+    path = inbox / "applepay" / applepay.FILE_NAME if inbox else None
+    if path is None or not path.is_file():
+        return None
+    report = SyncReport(run_id=new_id("correlation"), provider="applepay")
+    try:
+        payments, skipped = applepay.parse(path.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        report.errors.append(f"No se pudo leer {path.name}: {exc}")
+        return report
+    report.stats["payments"] = len(payments)
+    report.stats["lines_ignored"] = skipped
+    report.stats["transactions_enriched"] = finance_service(application).enrich_from_card_payments(
+        ChangeContext.system(),
+        payments,
+        placeholders=[fallback for _, _, fallback in BANKS.values()],
+        tz=ZoneInfo(application.config.timezone),
+    )
+    return report
 
 
 # Open banking (ADR 0010). alias de la sesión → (entidad, tipo de cuenta, concepto si falta).
