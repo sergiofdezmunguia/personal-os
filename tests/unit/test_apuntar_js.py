@@ -84,14 +84,71 @@ new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g),
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
-def test_from_shortcuts_saves_and_answers_without_ui():
+@pytest.mark.parametrize(
+    "texts, title",
+    [
+        ("tengo médico el martes 24 a las 12:30", "🩺 Médico"),
+        # Atajo con modelo: respuesta + lo dictado en la última línea.
+        (
+            '{"titulo":"Dentista","categoria":"salud","cuando":"martes 24","hora_inicio":"09:00"}'
+            "\nel martes 24 dentista a las 9",
+            "🩺 Dentista",
+        ),
+        ("Lo siento, no puedo ayudar con eso.\ntengo médico el martes 24 a las 12:30", "🩺 Médico"),
+    ],
+)
+def test_from_shortcuts_saves_and_answers_without_ui(texts, title):
     out = subprocess.run(
-        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), "tengo médico el martes 24 a las 12:30"],
+        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), texts],
         capture_output=True,
         text=True,
         check=True,
         env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
     )
     got = json.loads(out.stdout)
-    assert got["saved"] == ["🩺 Médico"] and got["alerts"] == 0
-    assert got["output"].startswith("Apuntado: 🩺 Médico")
+    assert got["saved"] == [title] and got["alerts"] == 0
+    assert got["output"].startswith(f"Apuntado: {title}")
+
+
+MODEL_HARNESS = """
+const src = require("fs").readFileSync(process.argv[1], "utf8");
+const module = { exports: {} };
+new (Object.getPrototypeOf(async function () {}).constructor)("module", src)(module);
+const { parseModelReply, parseStructured, describe } = module.exports;
+const now = new Date(2026, 10, 2, 22, 0);
+const out = JSON.parse(process.argv[2]).map((r) => {
+  const d = parseModelReply(r);
+  if (!d) return "NO-JSON";
+  const p = parseStructured(d, now);
+  return p.error ? "ERROR" : describe(p) + (p.location ? " @ " + p.location : "");
+});
+console.log(JSON.stringify(out));
+"""
+MODEL_CASES = {
+    # Respuestas como las de «Usar modelo», a veces con ``` o texto alrededor.
+    '{"titulo":"Médico","categoria":"salud","cuando":"martes 24","hora_inicio":"12:30",'
+    '"hora_fin":"","duracion_min":0,"lugar":""}': "🩺 Médico · martes 24 de noviembre, 12:30–13:30",
+    '```json\n{"titulo":"Vuelo a Gran Canaria","categoria":"vuelo","cuando":"sábado",'
+    '"hora_inicio":"08:00","hora_fin":"","duracion_min":0,"lugar":"Barajas T4"}\n```': "✈️ Vuelo a Gran Canaria · sábado 7 de noviembre, 8:00–10:00 @ Barajas T4",
+    'Aquí tienes: {"titulo":"Festivo","categoria":"festivo","cuando":"lunes 9",'
+    '"hora_inicio":"","hora_fin":"","duracion_min":0}': "🎉 Festivo · lunes 9 de noviembre (todo el día)",
+    '{"titulo":"Cena con Laura","categoria":"comida","cuando":"viernes","hora_inicio":"21:30",'
+    '"hora_fin":"","duracion_min":150}': "🍽️ Cena con Laura · viernes 6 de noviembre, 21:30–0:00",
+    '{"titulo":"Pádel","categoria":"deporte","cuando":"jueves","hora_inicio":"19:00",'
+    '"hora_fin":"20:30"}': "🏋️ Pádel · jueves 5 de noviembre, 19:00–20:30",
+    '{"titulo":"Algo","categoria":"otro","cuando":""}': "ERROR",
+    "no he entendido nada": "NO-JSON",
+}
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_model_reply_is_turned_into_event():
+    replies = list(MODEL_CASES)
+    out = subprocess.run(
+        [NODE, "-e", MODEL_HARNESS, str(SCRIPT), json.dumps(replies)],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
+    )
+    assert dict(zip(replies, json.loads(out.stdout), strict=True)) == MODEL_CASES

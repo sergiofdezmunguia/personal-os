@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 5.
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 6 (acepta la respuesta de «Usar modelo»).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -68,7 +68,7 @@ function cleanDictation(text) {
 }
 
 // Devuelve {title, emoji, start, end, allDay, warnings} o {error}.
-function parseEvent(text, now) {
+function parseEvent(text, now, opts = {}) {
   const original = cleanDictation(text);
   if (!original) return { error: "No has dicho nada." };
   let t = fold(original); // misma longitud que original
@@ -164,7 +164,7 @@ function parseEvent(text, now) {
     if (hour > 23 || minute > 59) return { error: "La hora no es válida." };
     const pm = period === "tarde" || (period === "noche" && hour >= 5);
     if (pm && hour < 12) hour += 12;
-    else if (period === null && hour >= 1 && hour <= 7 && !/vuelo|avion|aeropuerto|tren|renfe|autobus|guagua|ferry/.test(plain(original))) {
+    else if (!opts.hours24 && period === null && hour >= 1 && hour <= 7 && !/vuelo|avion|aeropuerto|tren|renfe|autobus|guagua|ferry/.test(plain(original))) {
       hour += 12; // «a las 5» casi siempre es por la tarde
       warnings.push("Entiendo que es por la tarde.");
     }
@@ -210,6 +210,51 @@ function parseEvent(text, now) {
   return { title, emoji, start, end, allDay, warnings };
 }
 
+// Respuesta de «Usar modelo» (Apple Intelligence) en Atajos: el modelo entiende la frase
+// y estas reglas calculan la fecha (los modelos fallan con la aritmética del calendario).
+const CATEGORY_EMOJI = { salud: "🩺", vuelo: "✈️", tren: "🚆", cine: "🎬", concierto: "🎵",
+  comida: "🍽️", quedada: "🍻", deporte: "🏋️", trabajo: "💼", formacion: "🎓", cumple: "🎂",
+  festivo: "🎉", peluqueria: "💈", tramite: "📌", otro: "📅" };
+
+function parseModelReply(reply) {
+  const raw = String(reply || "").replace(/```(json)?/gi, "");
+  const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
+  if (a < 0 || b < a) return null;
+  try { return JSON.parse(raw.slice(a, b + 1)); } catch (e) { return null; }
+}
+
+function parseStructured(d, now) {
+  const hhmm = (v) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || "").trim());
+    return m && +m[1] < 24 && +m[2] < 60 ? [+m[1], +m[2]] : null;
+  };
+  const when = String(d.cuando || "").trim();
+  if (!when) return { error: "No sé qué día es." };
+  const p = parseEvent(when, now); // solo el día: la hora la da el modelo
+  if (p.error) return p;
+  const cat = plain(String(d.categoria || "otro")).replace(/[^a-z]/g, "");
+  const known = CATEGORIES.find((c) => c[0] === CATEGORY_EMOJI[cat]);
+  const emoji = CATEGORY_EMOJI[cat] || "📅";
+  const catMinutes = known ? known[2] : 60;
+  let title = String(d.titulo || "").trim().replace(/\s+/g, " ") || "Evento";
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  const s0 = hhmm(d.hora_inicio), e0 = hhmm(d.hora_fin);
+  const y = p.start.getFullYear(), mo = p.start.getMonth(), da = p.start.getDate();
+  const minutes = parseInt(d.duracion_min, 10);
+  let start, end, allDay = !s0;
+  if (allDay) {
+    start = new Date(y, mo, da);
+    end = addDays(start, 1);
+  } else {
+    start = new Date(y, mo, da, s0[0], s0[1]);
+    if (e0) end = new Date(y, mo, da, e0[0], e0[1]);
+    else end = new Date(start.getTime() + (minutes > 0 && minutes <= 1440 ? minutes : catMinutes || 60) * 60000);
+    if (end <= start) end = new Date(end.getTime() + 24 * 3600000); // termina pasada la medianoche
+  }
+  return { title: `${emoji} ${title}`, emoji, start, end, allDay,
+    location: String(d.lugar || "").trim(), warnings: p.warnings };
+}
+
 function describe(p) {
   const days = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
   const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -236,7 +281,11 @@ async function main() {
     if ((await a.present()) === -1) return Script.complete();
     text = a.textFieldValue(0);
   }
-  const p = parseEvent(text, new Date());
+  // Desde el atajo llegan la respuesta del modelo y, en la última línea, lo dictado: si el
+  // modelo no devolvió JSON válido, se usan las reglas con la frase original.
+  const fromModel = parseModelReply(text);
+  if (!fromModel) text = text.split("\n").map((l) => l.trim()).filter(Boolean).pop() || text;
+  const p = fromModel ? parseStructured(fromModel, new Date()) : parseEvent(text, new Date());
   if (p.error) {
     if (siri) Script.setShortcutOutput(`No lo he apuntado: ${p.error}`);
     else { const e = new Alert(); e.title = "No lo he apuntado"; e.message = p.error; e.addAction("OK"); await e.present(); }
@@ -247,7 +296,8 @@ async function main() {
   ev.startDate = p.start;
   ev.endDate = p.end;
   ev.isAllDay = p.allDay;
-  ev.notes = `Apuntado: «${text}»`;
+  ev.notes = fromModel ? "Apuntado con Apple Intelligence" : `Apuntado: «${text}»`;
+  if (p.location) ev.location = p.location;
   if (CALENDAR_NAME) ev.calendar = await Calendar.forEventsByTitle(CALENDAR_NAME);
   const summary = describe(p) + (p.warnings.length ? `\n${p.warnings.join(" ")}` : "");
   if (siri) {
@@ -275,5 +325,5 @@ async function main() {
 // Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
 // script termina antes de crear el evento y de devolver la respuesta.
 const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
-if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe };
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseStructured };
 if (IN_SCRIPTABLE) await main();
