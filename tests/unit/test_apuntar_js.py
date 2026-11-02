@@ -11,7 +11,11 @@ from tests.sim_device import NODE, REPO
 
 SCRIPT = REPO / "bridge" / "scriptable" / "apuntar.js"
 HARNESS = """
-const { parseEvent, describe } = require(process.argv[1]);
+// El script usa `await` de primer nivel (como Scriptable): se evalúa dentro de una función async.
+const src = require("fs").readFileSync(process.argv[1], "utf8");
+const module = { exports: {} };
+new (Object.getPrototypeOf(async function () {}).constructor)("module", src)(module);
+const { parseEvent, describe } = module.exports;
 const now = new Date(2026, 10, 2, 22, 0);  // lunes 2 de noviembre de 2026
 const out = JSON.parse(process.argv[2]).map((s) => {
   const p = parseEvent(s, now);
@@ -37,6 +41,11 @@ CASES = {
 
 
 @pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_script_awaits_main_for_shortcuts():
+    # Sin `await`, Atajos da el script por terminado sin evento ni respuesta.
+    assert "else await main();" in SCRIPT.read_text(encoding="utf-8")
+
+
 def test_parse_spanish_phrases():
     phrases = list(CASES)
     out = subprocess.run(

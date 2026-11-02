@@ -201,7 +201,7 @@ function describe(p) {
 }
 
 async function main() {
-  let text = args.shortcutParameter || (args.plainTexts && args.plainTexts[0]) || "";
+  let text = String(args.shortcutParameter || (args.plainTexts && args.plainTexts[0]) || "");
   const siri = config.runsWithSiri || config.runsInActionExtension || !!args.shortcutParameter;
   if (!text && !siri) {
     const a = new Alert();
@@ -228,8 +228,12 @@ async function main() {
   if (CALENDAR_NAME) ev.calendar = await Calendar.forEventsByTitle(CALENDAR_NAME);
   const summary = describe(p) + (p.warnings.length ? `\n${p.warnings.join(" ")}` : "");
   if (siri) {
-    ev.save();
-    Script.setShortcutOutput(`Apuntado: ${summary}`);
+    try {
+      ev.save();
+      Script.setShortcutOutput(`Apuntado: ${summary}`);
+    } catch (e) {
+      Script.setShortcutOutput(`No lo he podido guardar (${e}). Abre Scriptable y da permiso al Calendario.`);
+    }
     return Script.complete();
   }
   const c = new Alert();
@@ -244,5 +248,7 @@ async function main() {
   Script.complete();
 }
 
+// Scriptable da el script por terminado al acabar el código de arriba: hay que esperar a
+// main() o, desde Atajos, termina antes de crear el evento y de devolver la respuesta.
 if (typeof module !== "undefined" && module.exports) module.exports = { parseEvent, describe };
-else main();
+else await main();
