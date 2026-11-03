@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 6 (acepta la respuesta de «Usar modelo»).
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 7 (acepta la respuesta de «Usar modelo» por cualquier campo).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -217,10 +217,37 @@ const CATEGORY_EMOJI = { salud: "🩺", vuelo: "✈️", tren: "🚆", cine: "�
   festivo: "🎉", peluqueria: "💈", tramite: "📌", otro: "📅" };
 
 function parseModelReply(reply) {
-  const raw = String(reply || "").replace(/```(json)?/gi, "");
+  if (reply && typeof reply === "object" && !Array.isArray(reply)) return "cuando" in reply ? reply : null;
+  const raw = String(reply || "").replace(/```(json)?/gi, "").replace(/[“”«»]/g, '"').replace(/[‘’]/g, "'");
   const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
   if (a < 0 || b < a) return null;
-  try { return JSON.parse(raw.slice(a, b + 1)); } catch (e) { return null; }
+  const body = raw.slice(a, b + 1).replace(/,\s*([}\]])/g, "$1"); // comas sobrantes
+  try {
+    const d = JSON.parse(body);
+    return d && typeof d === "object" && "cuando" in d ? d : null;
+  } catch (e) { return null; }
+}
+
+// Lo que manda Atajos puede llegar como texto, lista, diccionario o archivo, por Parameter o
+// por Texts/Files. Se junta todo en un texto (o se devuelve el diccionario del modelo).
+function collectInput(a, readFile) {
+  const parts = [];
+  const add = (v) => {
+    if (v === null || v === undefined) return;
+    if (Array.isArray(v)) return v.forEach(add);
+    if (typeof v === "object") { parts.push(JSON.stringify(v)); return; }
+    const t = String(v).trim();
+    if (t) parts.push(t);
+  };
+  add(a.shortcutParameter);
+  add(a.plainTexts);
+  for (const f of a.fileURLs || []) { try { add(readFile(f)); } catch (e) {} }
+  const sources = [
+    a.shortcutParameter ? "Parameter" : null,
+    (a.plainTexts || []).length ? "Texts" : null,
+    (a.fileURLs || []).length ? "Files" : null,
+  ].filter(Boolean);
+  return { text: parts.join("\n"), sources };
 }
 
 function parseStructured(d, now) {
@@ -266,10 +293,12 @@ function describe(p) {
 }
 
 async function main() {
-  let text = String(args.shortcutParameter || (args.plainTexts && args.plainTexts[0]) || "");
+  const input = collectInput(args, (f) => FileManager.local().readString(f));
+  let text = input.text;
+  const received = text;
   // Desde Atajos/Siri no se puede mostrar ninguna ventana: se guarda directamente y se
   // responde con setShortcutOutput. Solo se pregunta si se abre a mano en la app sin texto.
-  const fromShortcut = !!args.shortcutParameter || (args.plainTexts || []).length > 0;
+  const fromShortcut = input.sources.length > 0;
   const siri = fromShortcut || config.runsWithSiri || config.runsInActionExtension || !config.runsInApp;
   if (!text && !siri) {
     const a = new Alert();
@@ -287,7 +316,11 @@ async function main() {
   if (!fromModel) text = text.split("\n").map((l) => l.trim()).filter(Boolean).pop() || text;
   const p = fromModel ? parseStructured(fromModel, new Date()) : parseEvent(text, new Date());
   if (p.error) {
-    if (siri) Script.setShortcutOutput(`No lo he apuntado: ${p.error}`);
+    if (siri) {
+      const got = received ? `«${received.slice(0, 160)}»` : "nada";
+      const via = input.sources.length ? input.sources.join(", ") : "ningún campo";
+      Script.setShortcutOutput(`No lo he apuntado: ${p.error} (He recibido ${got} por ${via}.)`);
+    }
     else { const e = new Alert(); e.title = "No lo he apuntado"; e.message = p.error; e.addAction("OK"); await e.present(); }
     return Script.complete();
   }
@@ -325,5 +358,5 @@ async function main() {
 // Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
 // script termina antes de crear el evento y de devolver la respuesta.
 const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
-if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseStructured };
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseStructured, collectInput };
 if (IN_SCRIPTABLE) await main();

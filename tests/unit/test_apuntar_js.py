@@ -50,8 +50,7 @@ def test_script_awaits_main_for_shortcuts():
     # Sin `await`, Atajos da el script por terminado sin evento ni respuesta.
     src = SCRIPT.read_text(encoding="utf-8")
     assert "if (IN_SCRIPTABLE) await main();" in src
-    # Desde Atajos la frase llega en Texts (plainTexts) o en Parameter: nunca hay ventanas.
-    assert "(args.plainTexts || []).length > 0" in src and "!config.runsInApp" in src
+    assert "!config.runsInApp" in src  # desde Atajos nunca hay ventanas
 
 
 def test_parse_spanish_phrases():
@@ -71,11 +70,12 @@ SHORTCUT_SIM = """
 const src = require("fs").readFileSync(process.argv[1], "utf8");
 const saved = []; let output = null, alerts = 0;
 const g = {
-  args: { plainTexts: [process.argv[2]], shortcutParameter: null },
+  args: JSON.parse(process.argv[2]),
   config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
   Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
   CalendarEvent: class { save() { saved.push(this.title); } },
   Calendar: {}, Alert: class { constructor() { alerts++; } },
+  FileManager: { local: () => ({ readString: () => "" }) },
   module: { exports: {} },  // Scriptable define `module` en todos los scripts
 };
 new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g), src)(
@@ -83,31 +83,55 @@ new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g),
 """
 
 
-@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
-@pytest.mark.parametrize(
-    "texts, title",
-    [
-        ("tengo médico el martes 24 a las 12:30", "🩺 Médico"),
-        # Atajo con modelo: respuesta + lo dictado en la última línea.
-        (
-            '{"titulo":"Dentista","categoria":"salud","cuando":"martes 24","hora_inicio":"09:00"}'
-            "\nel martes 24 dentista a las 9",
-            "🩺 Dentista",
-        ),
-        ("Lo siento, no puedo ayudar con eso.\ntengo médico el martes 24 a las 12:30", "🩺 Médico"),
-    ],
-)
-def test_from_shortcuts_saves_and_answers_without_ui(texts, title):
+def run_shortcut(args: dict) -> dict:
     out = subprocess.run(
-        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), texts],
+        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), json.dumps(args)],
         capture_output=True,
         text=True,
         check=True,
         env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
     )
-    got = json.loads(out.stdout)
+    return json.loads(out.stdout)
+
+
+DENTISTA = '{"titulo":"Dentista","categoria":"salud","cuando":"martes 24","hora_inicio":"09:00"}'
+PADEL = "{“titulo”: “Pádel”, “categoria”: “deporte”, “cuando”: “jueves”, “hora_inicio”: “19:00”,}"
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+@pytest.mark.parametrize(
+    "args, title",
+    [
+        ({"plainTexts": ["tengo médico el martes 24 a las 12:30"]}, "🩺 Médico"),
+        # Atajo con modelo: respuesta + lo dictado en la última línea, por Parameter.
+        ({"shortcutParameter": DENTISTA + "\nel martes 24 dentista a las 9"}, "🩺 Dentista"),
+        ({"shortcutParameter": "No puedo.\ntengo médico el martes 24 a las 12:30"}, "🩺 Médico"),
+        # Atajos convierte la respuesta JSON en diccionario.
+        (
+            {
+                "shortcutParameter": {
+                    "titulo": "Cine",
+                    "categoria": "cine",
+                    "cuando": "viernes",
+                    "hora_inicio": "22:00",
+                }
+            },
+            "🎬 Cine",
+        ),
+        # Comillas tipográficas y coma sobrante, dentro de una lista.
+        ({"shortcutParameter": [PADEL]}, "🏋️ Pádel"),
+    ],
+)
+def test_from_shortcuts_saves_and_answers_without_ui(args, title):
+    got = run_shortcut(args)
     assert got["saved"] == [title] and got["alerts"] == 0
     assert got["output"].startswith(f"Apuntado: {title}")
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_empty_input_says_what_it_received():
+    got = run_shortcut({"shortcutParameter": ""})
+    assert got["saved"] == [] and "He recibido nada por ningún campo" in got["output"]
 
 
 MODEL_HARNESS = """
