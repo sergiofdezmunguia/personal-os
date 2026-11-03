@@ -132,6 +132,9 @@ def test_from_shortcuts_saves_and_answers_without_ui(args, title):
 def test_empty_input_says_what_it_received():
     got = run_shortcut({"shortcutParameter": ""})
     assert got["saved"] == [] and "He recibido nada por ningún campo" in got["output"]
+    # Lo que pasa con una acción Texto cuyas variables no están enlazadas: solo el salto.
+    got = run_shortcut({"shortcutParameter": "\n"})
+    assert got["saved"] == [] and 'Parameter: string, "\\n"' in got["output"]
 
 
 MODEL_HARNESS = """

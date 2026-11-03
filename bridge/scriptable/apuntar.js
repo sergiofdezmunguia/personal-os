@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 7 (acepta la respuesta de «Usar modelo» por cualquier campo).
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 8 (acepta la respuesta de «Usar modelo» por cualquier campo).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -235,8 +235,13 @@ function collectInput(a, readFile) {
   const add = (v) => {
     if (v === null || v === undefined) return;
     if (Array.isArray(v)) return v.forEach(add);
-    if (typeof v === "object") { parts.push(JSON.stringify(v)); return; }
-    const t = String(v).trim();
+    let t = "";
+    if (typeof v === "object") {
+      try { t = JSON.stringify(v); } catch (e) {}
+      if (!t || t === "{}") t = String(v); // objetos nativos de Atajos
+      if (t === "[object Object]") t = "";
+    } else t = String(v);
+    t = t.trim();
     if (t) parts.push(t);
   };
   add(a.shortcutParameter);
@@ -247,7 +252,11 @@ function collectInput(a, readFile) {
     (a.plainTexts || []).length ? "Texts" : null,
     (a.fileURLs || []).length ? "Files" : null,
   ].filter(Boolean);
-  return { text: parts.join("\n"), sources };
+  const p = a.shortcutParameter;
+  const kind = p === undefined || p === null ? "sin valor"
+    : `${typeof p}${typeof p === "object" ? " " + Object.prototype.toString.call(p) : ""}, ` +
+      `${JSON.stringify(String(p)).slice(0, 60)}`;
+  return { text: parts.join("\n"), sources, kind };
 }
 
 function parseStructured(d, now) {
@@ -319,7 +328,9 @@ async function main() {
     if (siri) {
       const got = received ? `«${received.slice(0, 160)}»` : "nada";
       const via = input.sources.length ? input.sources.join(", ") : "ningún campo";
-      Script.setShortcutOutput(`No lo he apuntado: ${p.error} (He recibido ${got} por ${via}.)`);
+      Script.setShortcutOutput(
+        `No lo he apuntado: ${p.error} (He recibido ${got} por ${via}; Parameter: ${input.kind}.)`
+      );
     }
     else { const e = new Alert(); e.title = "No lo he apuntado"; e.message = p.error; e.addAction("OK"); await e.present(); }
     return Script.complete();
