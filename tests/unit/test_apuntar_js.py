@@ -118,6 +118,15 @@ PADEL = "{“titulo”: “Pádel”, “categoria”: “deporte”, “cuando�
             },
             "🎬 Cine",
         ),
+        # Formato de líneas «clave: valor» (el del prompt), con adornos típicos de un modelo.
+        (
+            {
+                "shortcutParameter": "Aquí tienes:\n- **titulo**: Médico\ncategoria: salud\n"
+                "cuando: martes 24\nhora_inicio: 12:30\nhora_fin: -\nduracion_min: 0\nlugar: -"
+                "\ntengo médico el martes 24 a las doce y media"
+            },
+            "🩺 Médico",
+        ),
         # Comillas tipográficas y coma sobrante, dentro de una lista.
         ({"shortcutParameter": [PADEL]}, "🏋️ Pádel"),
     ],
@@ -179,3 +188,12 @@ def test_model_reply_is_turned_into_event():
         env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
     )
     assert dict(zip(replies, json.loads(out.stdout), strict=True)) == MODEL_CASES
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_empty_model_list_explains_the_fix():
+    # «Usar modelo» con salida de tipo lista devuelve [""]: hay que ponerla en Texto.
+    got = run_shortcut({"shortcutParameter": '[""]\nel lunes 9 tengo festivo'})
+    assert got["saved"] == ["🎉 Festivo"]  # cae a las reglas con lo dictado
+    got = run_shortcut({"shortcutParameter": [""]})
+    assert got["saved"] == []

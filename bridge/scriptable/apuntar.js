@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 8 (acepta la respuesta de «Usar modelo» por cualquier campo).
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 9 (acepta la respuesta de «Usar modelo» por cualquier campo).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -228,6 +228,22 @@ function parseModelReply(reply) {
   } catch (e) { return null; }
 }
 
+// Formato de líneas «clave: valor» (el que pide apuntar-prompt.txt; más fácil para el modelo).
+const KEYS = ["titulo", "categoria", "cuando", "hora_inicio", "hora_fin", "duracion_min", "lugar"];
+function parseKeyValues(reply) {
+  const d = {};
+  for (const line of String(reply || "").split(/\r?\n/)) {
+    const m = /^\s*[-*•]?\s*\**([a-zA-Z_ áéíóú]+?)\**\s*[:=]\s*(.*?)\s*$/.exec(line);
+    if (!m) continue;
+    const key = plain(m[1]).trim().replace(/ /g, "_").replace(/^hora$/, "hora_inicio");
+    if (!KEYS.includes(key)) continue;
+    let v = m[2].replace(/^["'“”«]+|["'“”»]+$/g, "").trim();
+    if (/^(-|–|—|ninguno|ninguna|n\/a|vacio|null|no)$/i.test(plain(v))) v = "";
+    d[key] = v;
+  }
+  return d.cuando ? d : null;
+}
+
 // Lo que manda Atajos puede llegar como texto, lista, diccionario o archivo, por Parameter o
 // por Texts/Files. Se junta todo en un texto (o se devuelve el diccionario del modelo).
 function collectInput(a, readFile) {
@@ -321,12 +337,16 @@ async function main() {
   }
   // Desde el atajo llegan la respuesta del modelo y, en la última línea, lo dictado: si el
   // modelo no devolvió JSON válido, se usan las reglas con la frase original.
-  const fromModel = parseModelReply(text);
+  const fromModel = parseModelReply(text) || parseKeyValues(text);
   if (!fromModel) text = text.split("\n").map((l) => l.trim()).filter(Boolean).pop() || text;
   const p = fromModel ? parseStructured(fromModel, new Date()) : parseEvent(text, new Date());
   if (p.error) {
     if (siri) {
       const got = received ? `«${received.slice(0, 160)}»` : "nada";
+      if (/^\[\s*""\s*\]$/.test(received.split("\n")[0] || "")) {
+        Script.setShortcutOutput("No lo he apuntado: «Usar modelo» ha devuelto una respuesta vacía. En el atajo, pon su salida en «Texto».");
+        return Script.complete();
+      }
       const via = input.sources.length ? input.sources.join(", ") : "ningún campo";
       Script.setShortcutOutput(
         `No lo he apuntado: ${p.error} (He recibido ${got} por ${via}; Parameter: ${input.kind}.)`
@@ -369,5 +389,5 @@ async function main() {
 // Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
 // script termina antes de crear el evento y de devolver la respuesta.
 const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
-if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseStructured, collectInput };
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseKeyValues, parseStructured, collectInput };
 if (IN_SCRIPTABLE) await main();
