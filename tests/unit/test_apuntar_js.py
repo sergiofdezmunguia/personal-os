@@ -225,3 +225,92 @@ def test_unrelated_clipboard_is_ignored():
         {"shortcutParameter": "cine el viernes a las 22"}, clipboard="mañana compro pan"
     )
     assert got["saved"] == ["🎬 Cine"] and got["clip"] == "mañana compro pan"
+
+
+# ------------------------------------------------------------------ cancelar, mover, recordar
+
+ACTION_SIM = """
+const src = require("fs").readFileSync(process.argv[1], "utf8");
+const input = JSON.parse(process.argv[2]);
+const NOW = new Date(2026, 10, 2, 22, 0);  // lunes 2 de noviembre de 2026
+const RealDate = Date;
+class FakeDate extends RealDate { constructor(...a) { super(...(a.length ? a : [NOW.getTime()])); } }
+const log = []; let output = null;
+class Ev {
+  constructor(o) { Object.assign(this, o); }
+  save() { log.push(["save", this.title, this.startDate.toString().slice(0, 21), this.endDate.toString().slice(0, 21), this.isAllDay]); }
+  remove() { log.push(["remove", this.title]); }
+}
+const events = input.events.map(([title, s, e, allDay]) => new Ev({ title, startDate: new RealDate(s), endDate: new RealDate(e), isAllDay: !!allDay }));
+const g = {
+  module: { exports: {} },
+  args: { shortcutParameter: input.text },
+  config: { runsInApp: false },
+  Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
+  Date: FakeDate,
+  CalendarEvent: Object.assign(class extends Ev {}, {
+    between: async (a, b) => events.filter((e) => e.startDate >= a && e.startDate < b),
+  }),
+  Reminder: class { save() { log.push(["reminder", this.title, this.dueDate ? this.dueDate.toString().slice(0, 21) : null, !!this.dueDateIncludesTime]); } },
+  Calendar: { forRemindersByTitle: async () => null, forEventsByTitle: async () => null },
+  Alert: class {}, Pasteboard: { pasteString: () => "", copyString: () => {} },
+  FileManager: { local: () => ({ readString: () => "" }) },
+};
+new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g), src)(
+  ...Object.values(g)).then(() => console.log(JSON.stringify({ log, output })));
+"""
+
+CAL = [
+    ["🩺 Médico", "2026-11-24T12:30:00", "2026-11-24T13:30:00"],
+    ["🎬 Cine con Laura", "2026-11-06T21:30:00", "2026-11-07T00:00:00"],
+    ["🎬 Cine", "2026-11-13T22:00:00", "2026-11-14T00:30:00"],
+    ["🎉 Festivo", "2026-11-09T00:00:00", "2026-11-10T00:00:00", True],
+]
+
+
+def act(text: str) -> dict:
+    out = subprocess.run(
+        [NODE, "-e", ACTION_SIM, str(SCRIPT), json.dumps({"text": text, "events": CAL})],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"TZ": "Europe/Madrid", "PATH": "/usr/bin:/bin"},
+    )
+    return json.loads(out.stdout)
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_cancel_by_voice():
+    got = act("cancela el médico")
+    assert got["log"] == [["remove", "🩺 Médico"]]
+    assert got["output"].startswith("Cancelado: 🩺 Médico · martes, 24 de noviembre")
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_cancel_ambiguous_asks_for_the_day():
+    got = act("Oye Siri, borra el cine")
+    assert got["log"] == [] and got["output"].startswith("Hay 2:")
+    assert act("borra el cine del viernes 13")["log"] == [["remove", "🎬 Cine"]]
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_move_keeps_what_is_not_said():
+    got = act("mueve el médico al jueves 26")  # misma hora y duración
+    assert got["log"] == [
+        ["save", "🩺 Médico", "Thu Nov 26 2026 12:30", "Thu Nov 26 2026 13:30", False]
+    ]
+    got = act("cambia el cine con Laura a las 22:15")  # mismo día
+    assert got["log"][0][2:4] == ["Fri Nov 06 2026 22:15", "Sat Nov 07 2026 00:45"]
+    got = act("pasa el festivo al lunes 16")
+    assert got["log"] == [
+        ["save", "🎉 Festivo", "Mon Nov 16 2026 00:00", "Tue Nov 17 2026 00:00", True]
+    ]
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_reminder_by_voice():
+    got = act("recuérdame pagar el alquiler el día 1 a las 9")
+    assert got["log"] == [["reminder", "Pagar el alquiler", "Tue Dec 01 2026 09:00", True]]
+    got = act("recuérdame llamar a mamá")  # sin fecha: recordatorio sin vencimiento
+    assert got["log"] == [["reminder", "Llamar a mamá", None, False]]
+    assert got["output"] == "Te lo recordaré: Llamar a mamá"
