@@ -431,14 +431,18 @@ class FinanceService:
                         used.add(r["id"])
                         break
 
-        # Saldo al cierre de cada día según el fichero frente al ya importado.
+        # Saldo al cierre de cada día según el fichero frente al ya importado. Los ids
+        # provisionales ya conocidos no cuentan: su saldo lo puso una consulta anterior de open
+        # banking y los días antiguos pueden mezclar fuentes (el desfase constante lo trata
+        # `_match_provisional`).
         incoming_eod = {t.booking_date: t.balance_after_cents for t in incoming}
         common = [
             d
             for d in {
                 t.booking_date
                 for t in incoming
-                if t.external_id in matches or t.external_id in known
+                if t.external_id in matches
+                or (t.external_id in known and not t.external_id.startswith(PROVISIONAL))
             }
             if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
         ]
