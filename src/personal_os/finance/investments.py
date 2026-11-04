@@ -17,7 +17,7 @@ import calendar
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from statistics import median
 
 from personal_os.core.events import ChangeContext
@@ -580,4 +580,127 @@ def net_worth(svc: FinanceService, *, months: int, today: str) -> list[NetWorthP
             else:
                 invest += sum(h.cost_cents for h in holdings(svc, acc.id, as_of=day).values())
         out.append(NetWorthPoint(m, day, cash, invest, basis, missing))
+    return out
+
+
+# --------------------------------------------------------------------------- precios diarios
+# ADR 0012: cierre diario por ISIN de fuentes públicas (lo descarga `pos sync`). La cartera
+# se valora con las participaciones de hoy (de las operaciones) × el último cierre.
+
+
+def open_isins(svc: FinanceService) -> list[str]:
+    """ISIN con participaciones hoy, en cualquier cuenta."""
+    out: set[str] = set()
+    for acc in svc.list_accounts():
+        out |= {i for i, h in holdings(svc, acc.id).items() if h.shares > 0}
+    return sorted(out)
+
+
+def store_prices(svc: FinanceService, rows: list[tuple[str, str, Decimal, str, str]], *,
+                 fetched_at: str) -> int:  # fmt: skip
+    """Guarda cierres (isin, día, precio, divisa, fuente). Devuelve los días nuevos."""
+    new = 0
+    with svc.db.transaction():
+        for isin, day, price, currency, source in rows:
+            cur = svc.db.execute(
+                "INSERT INTO fin_prices(isin, price_date, price, currency, source, fetched_at)"
+                " VALUES (?,?,?,?,?,?) ON CONFLICT(isin, price_date) DO UPDATE SET"
+                " price = excluded.price, source = excluded.source, fetched_at = excluded.fetched_at"
+                " WHERE fin_prices.price <> excluded.price",
+                (isin, day, str(price), currency, source, fetched_at),
+            )
+            new += cur.rowcount
+    return new
+
+
+def last_price_fetch(svc: FinanceService) -> str | None:
+    return svc.db.one("SELECT MAX(fetched_at) AS m FROM fin_prices")["m"]
+
+
+@dataclass(frozen=True)
+class LivePosition:
+    isin: str
+    name: str
+    shares: Decimal
+    price: Decimal | None
+    price_date: str | None
+    value_cents: int | None
+    cost_cents: int
+    day_change_cents: int | None  # frente al cierre anterior
+
+    @property
+    def gain_cents(self) -> int | None:
+        return None if self.value_cents is None else self.value_cents - self.cost_cents
+
+
+@dataclass(frozen=True)
+class LivePortfolio:
+    account_id: str
+    label: str
+    positions: list[LivePosition]
+
+    @property
+    def complete(self) -> bool:
+        return all(p.value_cents is not None for p in self.positions)
+
+    @property
+    def value_cents(self) -> int:
+        return sum(p.value_cents or 0 for p in self.positions)
+
+    @property
+    def cost_cents(self) -> int:
+        return sum(p.cost_cents for p in self.positions)
+
+    @property
+    def gain_cents(self) -> int:
+        return self.value_cents - self.cost_cents
+
+    @property
+    def gain_pct(self) -> float | None:
+        return round(100 * self.gain_cents / self.cost_cents, 2) if self.cost_cents else None
+
+    @property
+    def day_change_cents(self) -> int:
+        return sum(p.day_change_cents or 0 for p in self.positions)
+
+    @property
+    def as_of(self) -> str | None:
+        days = [p.price_date for p in self.positions if p.price_date]
+        return min(days) if days else None
+
+
+def _cents(shares: Decimal, price: Decimal) -> int:
+    return int((shares * price * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+
+
+def live_portfolios(
+    svc: FinanceService, *, today: str, max_age_days: int = 7
+) -> list[LivePortfolio]:
+    """Cartera de hoy a último cierre conocido (no más antiguo que `max_age_days`)."""
+    limit = (date.fromisoformat(today) - timedelta(days=max_age_days)).isoformat()
+    out = []
+    for acc in svc.list_accounts():
+        current = {i: h for i, h in holdings(svc, acc.id).items() if h.shares > 0}
+        if not current:
+            continue
+        positions = []
+        for isin, h in sorted(current.items(), key=lambda x: x[1].name):
+            rows = svc.db.all(
+                "SELECT price_date, price FROM fin_prices WHERE isin = ? AND currency = 'EUR'"
+                " AND price_date BETWEEN ? AND ? ORDER BY price_date DESC LIMIT 2",
+                (isin, limit, today),
+            )
+            if not rows:
+                positions.append(LivePosition(isin, h.name, h.shares, None, None, None,
+                                              h.cost_cents, None))  # fmt: skip
+                continue
+            price = Decimal(rows[0]["price"])
+            value = _cents(h.shares, price)
+            prev = _cents(h.shares, Decimal(rows[1]["price"])) if len(rows) > 1 else None
+            positions.append(LivePosition(
+                isin, h.name, h.shares, price, rows[0]["price_date"], value, h.cost_cents,
+                None if prev is None else value - prev,
+            ))  # fmt: skip
+        positions.sort(key=lambda p: -(p.value_cents or p.cost_cents))
+        out.append(LivePortfolio(acc.id, acc.label, positions))
     return out

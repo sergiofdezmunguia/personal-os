@@ -248,6 +248,7 @@ class Panel:
     holdings: list[Holding]  # dónde está el dinero hoy
     uncategorized: int  # movimientos sin categoría en los meses analizados
     warnings: list[str] = field(default_factory=list)
+    portfolio: list[investments.LivePortfolio] = field(default_factory=list)  # a precio de hoy
 
     @property
     def expense_habit_cents(self) -> int:
@@ -399,8 +400,12 @@ def build(svc: FinanceService, *, today: str) -> Panel:
         bal = investments.cash_balance(svc, acc.id, today)
         if bal is not None:
             holdings.append(Holding(f"Efectivo {acc.name.split(' · ')[0]}", bal))
+    live = {lp.account_id: lp for lp in investments.live_portfolios(svc, today=today)}
     for p in investments.portfolios(svc):
-        if p.value_cents is not None:
+        lp = live.get(p.account_id)
+        if lp and lp.complete and lp.positions:
+            holdings.append(Holding("Inversiones", lp.value_cents, f"a cierre del {lp.as_of}"))
+        elif p.value_cents is not None:
             value = p.value_cents + p.invested_after_cents
             holdings.append(
                 Holding("Inversiones", value, f"valoración del {p.as_of}" + (
@@ -425,6 +430,7 @@ def build(svc: FinanceService, *, today: str) -> Panel:
         habit=habit_flow,
         net_worth=investments.net_worth(svc, months=TREND_MONTHS, today=today),
         holdings=holdings,
+        portfolio=[lp for lp in live.values() if lp.complete],
         uncategorized=uncategorized,
         warnings=warnings,
     )

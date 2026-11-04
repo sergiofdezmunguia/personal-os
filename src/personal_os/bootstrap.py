@@ -285,7 +285,49 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
             report = applepay_enrich(application)
             if report is not None:
                 outcome.reports.append(report)
+            report = update_prices(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+PRICES_MIN_HOURS = 6  # como mucho una descarga de cotizaciones cada 6 h
+
+
+def update_prices(application: App, *, force: bool = False, client=None):
+    """Último cierre de cada ISIN en cartera (ADR 0012). None si no toca o no hay cartera."""
+    from datetime import datetime, timedelta
+
+    from personal_os.adapters.quotes import QuoteError, QuotesClient
+    from personal_os.core.ids import new_id
+    from personal_os.finance import investments
+    from personal_os.sync.store import SyncReport
+
+    svc = finance_service(application)
+    isins = investments.open_isins(svc)
+    if not isins:
+        return None
+    now = application.clock.now()
+    last = investments.last_price_fetch(svc)
+    if (
+        not force
+        and last
+        and datetime.fromisoformat(last.replace("Z", "+00:00"))
+        > now - timedelta(hours=PRICES_MIN_HOURS)
+    ):
+        return None
+    client = client or QuotesClient()
+    report = SyncReport(run_id=new_id("correlation"), provider="prices")
+    rows = []
+    for isin in isins:
+        try:
+            rows += [(q.isin, q.day, q.price, q.currency, q.source) for q in client.quotes(isin)]
+        except QuoteError as exc:
+            report.errors.append(str(exc))
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    report.stats["isins"] = len(isins)
+    report.stats["prices_new"] = investments.store_prices(svc, rows, fetched_at=stamp)
+    return report
 
 
 def applepay_enrich(application: App):

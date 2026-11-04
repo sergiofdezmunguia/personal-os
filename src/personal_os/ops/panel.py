@@ -652,6 +652,18 @@ def widget_data(panel, *, generated_at: str) -> dict:
         "net_worth_cents": sum(h.cents for h in panel.holdings),
         "holdings": [{"label": h.label, "cents": h.cents} for h in panel.holdings],
         "uncategorized": panel.uncategorized,
+        "portfolio": [
+            {
+                "label": lp.label,
+                "value_cents": lp.value_cents,
+                "cost_cents": lp.cost_cents,
+                "gain_cents": lp.gain_cents,
+                "gain_pct": lp.gain_pct,
+                "day_change_cents": lp.day_change_cents,
+                "as_of": lp.as_of,
+            }
+            for lp in panel.portfolio
+        ],
     }
 
 

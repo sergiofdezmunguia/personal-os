@@ -87,6 +87,14 @@ def morning(svc, panel, now: datetime) -> dict | None:
         )
     else:
         second = f"En {month} llevas {eur(p.variable_cents, decimals=False)} de gasto variable."
+    for lp in panel.portfolio:
+        base = lp.value_cents - lp.day_change_cents
+        day = f"{100 * lp.day_change_cents / base:+.1f} %".replace(".", ",") if base else ""
+        second += (
+            f"\nCartera: {eur(lp.value_cents, decimals=False)}"
+            + (f" ({day} en la última sesión)" if lp.day_change_cents and day else "")
+            + "."
+        )
     start = datetime.combine(today, MORNING[0], now.tzinfo)
     end = datetime.combine(today, MORNING[1], now.tzinfo)
     return _notice(f"dia:{today}", "☀️ Buenos días", f"{first}\n{second}", start, end,

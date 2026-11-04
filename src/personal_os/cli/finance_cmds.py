@@ -381,6 +381,32 @@ def _today() -> str:
         application.db.close()
 
 
+@app.command("prices")
+def prices(
+    force: bool = typer.Option(False, "--force", help="Descarga aunque se hiciera hace poco"),
+) -> None:
+    """Descarga el último cierre de cada fondo/ETF en cartera (justETF/Yahoo) y muestra la
+    cartera a precio de hoy (ADR 0012)."""
+    application = wiring.open_app()
+    try:
+        report = wiring.update_prices(application, force=force)
+        if report is not None:
+            for e in report.errors:
+                typer.echo(f"  aviso: {e}")
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        for lp in inv.live_portfolios(svc, today=today):
+            typer.echo(f"{lp.label}: {fmt_eur(lp.value_cents)} · coste {fmt_eur(lp.cost_cents)}"
+                       f" · {fmt_eur(lp.gain_cents)} ({lp.gain_pct} %)"
+                       f" · última sesión {fmt_eur(lp.day_change_cents)} · cierre {lp.as_of}")  # fmt: skip
+            for p in lp.positions:
+                val = fmt_eur(p.value_cents) if p.value_cents is not None else "sin precio"
+                typer.echo(f"  {p.name[:40]:<40} {val:>14}  {p.price_date or ''}")
+    finally:
+        application.db.close()
+
+
 @app.command("recurring")
 def recurring(
     all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),

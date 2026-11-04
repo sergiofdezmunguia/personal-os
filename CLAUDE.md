@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking) y 0011 (analista y avisos).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos) y 0012 (precios diarios).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -100,7 +100,8 @@ Reglas impuestas por `lint-imports`:
 - Analista (ADR 0011): `finance/analyst.py` (recurrentes, subidas, duplicados, semana) y
   `ops/notices.py` → `panel/avisos.json` → notificaciones con `Personal OS Avisos.js`.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
-  importado sin duplicar), PDF de patrimonio = único valor de mercado; nunca precios de red.
+  importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
+  de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
   (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.
   Para revisar su diseño, renderízalo con datos inventados, nunca con los reales.

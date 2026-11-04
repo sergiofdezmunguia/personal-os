@@ -195,3 +195,10 @@ en ADR 0009.
   anuales). Tocar el aviso abre el panel. Detalle en ADR 0011.
 - Compras online sin concepto: en el cierre de mes, Claude busca el recibo en Gmail y les pone
   nombre con `name_unlabeled_transaction` (solo a movimientos sin concepto).
+
+## Precio diario de la cartera
+
+`pos sync` descarga el último cierre de cada fondo/ETF en cartera (justETF; Yahoo de
+respaldo) como mucho cada 6 h. `pos finance prices [--force]` lo hace a mano y muestra la
+cartera a precio de hoy. El panel, el widget y el aviso de buenos días usan ese valor. El PDF
+mensual de TR sigue siendo la referencia de cierre. Detalle en ADR 0012.
