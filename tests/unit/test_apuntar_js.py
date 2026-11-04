@@ -69,23 +69,26 @@ def test_parse_spanish_phrases():
 SHORTCUT_SIM = """
 const src = require("fs").readFileSync(process.argv[1], "utf8");
 const saved = []; let output = null, alerts = 0;
+const input = JSON.parse(process.argv[2]);
+let clip = input.clipboard || "";
 const g = {
-  args: JSON.parse(process.argv[2]),
+  args: input.args,
   config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
   Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
   CalendarEvent: class { save() { saved.push(this.title); } },
   Calendar: {}, Alert: class { constructor() { alerts++; } },
+  Pasteboard: { pasteString: () => clip, copyString: (v) => { clip = v; } },
   FileManager: { local: () => ({ readString: () => "" }) },
   module: { exports: {} },  // Scriptable define `module` en todos los scripts
 };
 new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g), src)(
-  ...Object.values(g)).then(() => console.log(JSON.stringify({ saved, output, alerts })));
+  ...Object.values(g)).then(() => console.log(JSON.stringify({ saved, output, alerts, clip })));
 """
 
 
-def run_shortcut(args: dict) -> dict:
+def run_shortcut(args: dict, clipboard: str = "") -> dict:
     out = subprocess.run(
-        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), json.dumps(args)],
+        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), json.dumps({"args": args, "clipboard": clipboard})],
         capture_output=True,
         text=True,
         check=True,
@@ -197,3 +200,28 @@ def test_empty_model_list_explains_the_fix():
     assert got["saved"] == ["🎉 Festivo"]  # cae a las reglas con lo dictado
     got = run_shortcut({"shortcutParameter": [""]})
     assert got["saved"] == []
+
+
+MODEL_LINES = "titulo: Médico\ncategoria: salud\ncuando: martes 24\nhora_inicio: 12:30\nhora_fin: -"
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_model_reply_through_clipboard():
+    # Atajos entrega la «Respuesta» como [""]; el atajo la copia al portapapeles.
+    got = run_shortcut({"shortcutParameter": [""]}, clipboard=MODEL_LINES)
+    assert got["saved"] == ["🩺 Médico"] and got["clip"] == ""  # se vacía tras usarla
+    # Con lo dictado por Parameter: manda el modelo, lo dictado queda de respaldo.
+    got = run_shortcut(
+        {"shortcutParameter": "el martes 24 a las doce y media médico"}, clipboard=MODEL_LINES
+    )
+    assert got["saved"] == ["🩺 Médico"] and got["output"].startswith(
+        "Apuntado: 🩺 Médico · martes 24"
+    )
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_unrelated_clipboard_is_ignored():
+    got = run_shortcut(
+        {"shortcutParameter": "cine el viernes a las 22"}, clipboard="mañana compro pan"
+    )
+    assert got["saved"] == ["🎬 Cine"] and got["clip"] == "mañana compro pan"

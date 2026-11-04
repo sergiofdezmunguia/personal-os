@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 9 (acepta la respuesta de «Usar modelo» por cualquier campo).
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 10 (la respuesta de «Usar modelo» llega por el portapapeles).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -317,13 +317,27 @@ function describe(p) {
   return p.allDay ? `${p.title} · ${when} (todo el día)` : `${p.title} · ${when}, ${hm(s)}–${hm(p.end)}`;
 }
 
+// Atajos pasa la «Respuesta» de «Usar modelo» a Scriptable como [""]: el atajo la copia al
+// portapapeles y aquí se recoge, solo si tiene forma de respuesta del modelo (nunca un texto
+// cualquiera que hubiera copiado antes). Se vacía tras leerla para no reutilizarla.
+function mergeClipboard(text, clip) {
+  const own = String(text || "").split("\n").filter((l) => !/^\s*\[\s*""\s*\]\s*$/.test(l)).join("\n").trim();
+  const c = String(clip || "").trim();
+  if (!c || !(parseModelReply(c) || parseKeyValues(c))) return { text: own, used: false };
+  return { text: own ? `${c}\n${own}` : c, used: true };
+}
+
 async function main() {
   const input = collectInput(args, (f) => FileManager.local().readString(f));
-  let text = input.text;
+  let clip = "";
+  try { clip = Pasteboard.pasteString() || ""; } catch (e) {}
+  const merged = mergeClipboard(input.text, clip);
+  if (merged.used) { try { Pasteboard.copyString(""); } catch (e) {} }
+  let text = merged.text;
   const received = text;
   // Desde Atajos/Siri no se puede mostrar ninguna ventana: se guarda directamente y se
   // responde con setShortcutOutput. Solo se pregunta si se abre a mano en la app sin texto.
-  const fromShortcut = input.sources.length > 0;
+  const fromShortcut = input.sources.length > 0 || merged.used;
   const siri = fromShortcut || config.runsWithSiri || config.runsInActionExtension || !config.runsInApp;
   if (!text && !siri) {
     const a = new Alert();
@@ -343,8 +357,8 @@ async function main() {
   if (p.error) {
     if (siri) {
       const got = received ? `«${received.slice(0, 160)}»` : "nada";
-      if (/^\[\s*""\s*\]$/.test(received.split("\n")[0] || "")) {
-        Script.setShortcutOutput("No lo he apuntado: «Usar modelo» ha devuelto una respuesta vacía. En el atajo, pon su salida en «Texto».");
+      if (/^\[\s*""\s*\]$/.test(input.text.split("\n")[0] || "")) {
+        Script.setShortcutOutput("No lo he apuntado: la «Respuesta» de «Usar modelo» llega vacía a Scriptable. En el atajo, añade «Copiar al portapapeles» (Respuesta) antes de «Run Apuntar» y pon en Parameter el «Texto dictado».");
         return Script.complete();
       }
       const via = input.sources.length ? input.sources.join(", ") : "ningún campo";
@@ -389,5 +403,5 @@ async function main() {
 // Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
 // script termina antes de crear el evento y de devolver la respuesta.
 const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
-if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseKeyValues, parseStructured, collectInput };
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseKeyValues, parseStructured, collectInput, mergeClipboard };
 if (IN_SCRIPTABLE) await main();
