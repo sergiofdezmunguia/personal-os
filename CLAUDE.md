@@ -64,7 +64,7 @@ Reglas impuestas por `lint-imports`:
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
   `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
   `list_category_rules`, `propose_category_rule`, `categorize_transactions`,
-  `investments_overview`. Actor de
+  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`. Actor de
   auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones) y 0010 (open banking).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking) y 0011 (analista y avisos).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -97,6 +97,8 @@ Reglas impuestas por `lint-imports`:
   máx. una consulta cada 5 h por el cupo PSD2). Ids provisionales `prov:` (TR no da id): los
   sustituye un id real posterior. Para inspeccionar respuestas reales, solo estructura
   enmascarada; cada consulta gasta cupo del banco.
+- Analista (ADR 0011): `finance/analyst.py` (recurrentes, subidas, duplicados, semana) y
+  `ops/notices.py` → `panel/avisos.json` → notificaciones con `Personal OS Avisos.js`.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = único valor de mercado; nunca precios de red.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`

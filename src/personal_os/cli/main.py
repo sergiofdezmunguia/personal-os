@@ -87,8 +87,12 @@ def bridge_install() -> None:
     widget = wiring.WIDGET_SOURCE.read_text(encoding="utf-8").replace(
         'const MAILBOX = "personal-os";', f"const MAILBOX = {json.dumps(mailbox.name)};"
     )
+    avisos = wiring.AVISOS_SOURCE.read_text(encoding="utf-8").replace(
+        'const MAILBOX = "personal-os";', f"const MAILBOX = {json.dumps(mailbox.name)};"
+    )
     for name, text in (
         (wiring.BRIDGE_SCRIPT_NAME, source),
+        (wiring.AVISOS_NAME, avisos),
         (wiring.PANEL_VIEWER_NAME, viewer),
         (wiring.WIDGET_NAME, widget),
         (wiring.APUNTAR_NAME, apuntar),

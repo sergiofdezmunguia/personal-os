@@ -58,6 +58,8 @@ def test_exposes_minimal_toolset(server):
         "categorize_transactions",
         "finance_month_close",
         "investments_overview",
+        "finance_recurring",
+        "name_unlabeled_transaction",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
     assert tools["investments_overview"].annotations.read_only_hint is True

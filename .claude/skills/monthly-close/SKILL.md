@@ -22,7 +22,14 @@ lo que toca). Mes por defecto: el anterior al actual.
 2. **Estado**: herramienta MCP `finance_month_close` (o `uv run pos finance close AAAA-MM`).
    - Si `statements_complete` es falso: di qué cuenta falta y cómo descargar su extracto
      (ver `docs/finance.md`) y para aquí hasta que lo suba; lo demás sería provisional.
-3. **Categorizar lo pendiente** (`list_transactions` con `uncategorized=true` y `month`):
+3. **Compras sin concepto** (`list_transactions` del mes; descripción «… sin concepto», sobre
+   todo compras online de Trade Republic sin Apple Pay). Si hay conector de Gmail: busca el
+   recibo por importe y fecha (±2 días), p. ej. `"29,99" after:AAAA/MM/DD before:AAAA/MM/DD`
+   con palabras como pedido, recibo, factura, order, receipt. Solo con un recibo que case en
+   importe exacto y fecha → `name_unlabeled_transaction` con el nombre comercial corto. Si no
+   hay recibo claro, déjalo y menciónalo en el resumen (el CSV mensual de TR lo resuelve).
+   Nunca copies datos del correo (direcciones, números de pedido) a ningún sitio.
+4. **Categorizar lo pendiente** (`list_transactions` con `uncategorized=true` y `month`):
    - Mira antes `list_category_rules` y `finance_summary.categories`.
    - **Comercio que se repite** (o que claramente se repetirá: suscripciones, gimnasio,
      supermercado): `propose_category_rule` (queda propuesta; el usuario la aprueba).
@@ -33,19 +40,20 @@ lo que toca). Mes por defecto: el anterior al actual.
      entre sus cuentas → `traspaso`. Planes de inversión → `inversion`.
    - Si falta una categoría que tendría sentido, propónla; solo el usuario las crea
      (`pos finance category add …`).
-4. **Rendimiento del efectivo** (`cash_yield` del paso 2): intereses y saveback esperados vs
+5. **Rendimiento del efectivo** (`cash_yield` del paso 2): intereses y saveback esperados vs
    abonados. Son estimaciones: el banco puede aplicar retención fiscal, topes o exclusiones.
    Señala solo desviaciones grandes o cambios respecto a meses anteriores; si `received` es
    null, aún no se ha abonado (llega el mes siguiente).
-5. **Inversiones** (`investments_overview`): aportado en el mes frente al plan
+6. **Inversiones** (`investments_overview`): aportado en el mes frente al plan
    (`contributions[].plan_ok`; si es `false`, qué ETF quedó corto), valor de la cartera y
    resultado según la última valoración, y patrimonio neto frente al mes anterior. Si la
    última valoración no es de fin de mes, recuerda subir el PDF «Extracto del patrimonio
    neto» de TR (y la exportación CSV completa) a la bandeja.
-6. **Resumen para el usuario** (breve, en español):
+7. **Resumen para el usuario** (breve, en español):
    - Ingresos, gastos y neto, frente al mes anterior.
    - Las 3–5 categorías que más se han movido y por qué (si se ve en los movimientos).
    - Intereses y saveback.
+   - Cobros recurrentes (`finance_recurring`): total al mes, subidas de precio y duplicados.
    - Inversiones: plan cumplido o no, cartera y patrimonio neto.
    - Lo que queda pendiente del usuario: reglas propuestas (`pos finance rule approve --all`),
      preguntas sobre comercios, extractos que faltan.

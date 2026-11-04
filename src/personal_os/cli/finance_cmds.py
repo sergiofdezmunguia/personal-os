@@ -13,6 +13,7 @@ from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
+from personal_os.finance import analyst
 from personal_os.finance import investments as inv
 from personal_os.finance.importers import StatementError, describe, detect
 from personal_os.finance.investments import import_document
@@ -369,6 +370,77 @@ def category_add(
     except FinanceError as exc:
         fail(str(exc))
     typer.echo(f"✓ {c.slug} ({c.kind}{', dentro de ' + c.parent if c.parent else ''})")
+
+
+def _today() -> str:
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        return application.clock.now().astimezone(tz).date().isoformat()
+    finally:
+        application.db.close()
+
+
+@app.command("recurring")
+def recurring(
+    all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cobros recurrentes (suscripciones, cuotas, recibos): coste al mes, próximo cobro y
+    subidas de precio. Detectados por patrón, sin reglas que mantener."""
+    today = _today()
+    items = analyst.recurring(_svc(), today=today, include_inactive=all_)
+    if as_json:
+        echo_json([
+            {**r.__dict__, "monthly_cents": r.monthly_cents, "rise_cents": r.rise_cents,
+             "variable": r.variable}
+            for r in items
+        ])  # fmt: skip
+        return
+    if not items:
+        typer.echo("No se detectan cobros recurrentes.")
+        return
+    total = 0
+    for r in items:
+        if r.active:
+            total += r.monthly_cents
+        state = "" if r.active else "  (ya no cobra)"
+        rise = f"  ↑ antes {fmt_eur(r.previous_cents)}" if r.previous_cents else ""
+        nxt = f"próximo ~{r.next_day}" if r.next_day else f"último {r.last_day}"
+        amount = ("≈" if r.variable else "") + fmt_eur(r.last_cents)
+        typer.echo(
+            f"{r.merchant[:28]:<28} {r.cadence:<8} {amount:>12}  {nxt}  [{r.category or '·'}]"
+            f"{rise}{state}"
+        )
+    typer.echo(f"Total activo: {fmt_eur(total)} al mes ({fmt_eur(total * 12)} al año)")
+
+
+@app.command("week")
+def week(
+    last_day: str | None = typer.Argument(None, help="Último día (YYYY-MM-DD); por defecto hoy"),
+) -> None:
+    """Resumen de 7 días frente a una semana habitual, con subidas y posibles duplicados."""
+    svc = _svc()
+    day = last_day or _today()
+    w = analyst.week(svc, last_day=day)
+    s = w.spend
+    typer.echo(
+        f"Semana {s.first_day} → {s.last_day}: {fmt_eur(s.expense_cents)} en {s.payments} pagos"
+    )
+    if w.habit_cents:
+        typer.echo(
+            f"  Habitual: {fmt_eur(w.habit_cents)} ({fmt_eur(s.expense_cents - w.habit_cents)})"
+        )
+    for name, cents in s.by_category[:5]:
+        typer.echo(f"  {name[:24]:<24} {fmt_eur(cents):>12}")
+    if s.uncategorized:
+        typer.echo(f"  Sin categoría: {s.uncategorized} mov. ({fmt_eur(s.uncategorized_cents)})")
+    for r in w.rises:
+        typer.echo(f"  ↑ {r.merchant}: {fmt_eur(r.previous_cents)} → {fmt_eur(r.last_cents)}")
+    for r in w.new_recurring:
+        typer.echo(f"  Nuevo recurrente: {r.merchant} ({fmt_eur(r.last_cents)} al mes)")
+    for d in analyst.duplicates(svc, today=day):
+        typer.echo(f"  ¿Duplicado? {d.count} × {fmt_eur(d.cents)} en {d.merchant} el {d.day}")
 
 
 @app.command("summary")

@@ -23,6 +23,7 @@ from pathlib import Path
 from personal_os.finance import insights
 from personal_os.finance.insights import CUT_SHARE, Panel
 from personal_os.finance.models import fmt_eur
+from personal_os.ops import notices
 
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 MONTHS_LONG = [
@@ -625,6 +626,11 @@ def generate(application) -> PanelResult:
     wtmp = folder / (WIDGET + ".tmp")
     wtmp.write_text(data, encoding="utf-8")
     os.replace(wtmp, folder / WIDGET)
+    notices.write(
+        folder,
+        notices.build(svc, panel, now),
+        generated_at=now.isoformat(timespec="minutes"),
+    )
     return PanelResult(target, len(page.encode()))
 
 

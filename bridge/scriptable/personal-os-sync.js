@@ -8,7 +8,7 @@
 // en iCloud Drive). NO editar la copia del iPhone: editar aquí y reinstalar.
 
 const PROTOCOL = "pos-reminders/1";
-const BRIDGE_VERSION = "1.1.0";
+const BRIDGE_VERSION = "1.2.0";
 const LIST_NAME = "Personal OS";
 const MAILBOX = "personal-os";
 const WINDOW_DAYS = 90;
@@ -390,6 +390,14 @@ async function main() {
     : "Personal OS: " + summary.batches + " lotes, " + summary.commands + " comandos, " +
       summary.conflicts + " conflictos, " + summary.errors + " errores, " +
       summary.reminders + " recordatorios";
+  // Avisos del PC (ver avisos.js): nunca hacen fallar la sync.
+  let notices = "";
+  try {
+    if (typeof importModule === "function") {
+      const n = await importModule("Personal OS Avisos").deliver();
+      if (n) notices = " · " + n + " avisos";
+    }
+  } catch (e) {}
   if (config.runsInApp) {
     const alert = new Alert();
     alert.title = "Personal OS sync";
@@ -397,7 +405,7 @@ async function main() {
     alert.addAction("OK");
     await alert.present();
   }
-  Script.setShortcutOutput(text);
+  Script.setShortcutOutput(text + notices);
   Script.complete();
   return summary;
 }

@@ -25,7 +25,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
-from personal_os.finance import investments
+from personal_os.finance import analyst, investments
 from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
@@ -381,6 +381,52 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                     "saveback_ratio": y.saveback_ratio,
                 }
                 for y in mc.yields
+            ],
+        }
+
+    @server.tool()
+    def name_unlabeled_transaction(transaction_id: str, merchant: str) -> dict[str, Any]:
+        """Pone el comercio a un movimiento SIN concepto del banco (descripción «… sin
+        concepto», típico de compras online de Trade Republic), p. ej. a partir del recibo
+        del correo con el mismo importe y fecha (±2 días). Rechaza movimientos que ya tienen
+        concepto. Usa el nombre comercial corto («Amazon», «Zara»). Aplica las reglas."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        try:
+            name = svc.name_placeholder(
+                _ctx(), transaction_id, merchant,
+                placeholders=[fallback for _, _, fallback in bootstrap.BANKS.values()],
+            )  # fmt: skip
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        txn = svc.get_transaction(transaction_id)
+        return {"id": transaction_id, "description": name, "category": txn.category}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def finance_recurring(include_inactive: bool = False) -> dict[str, Any]:
+        """Cobros recurrentes detectados por patrón (suscripciones, cuotas, recibos; solo
+        lectura, céntimos): cadencia, último importe, próximo cobro previsto, subida de precio
+        (`previous_cents`) y si el importe es variable; más posibles cobros duplicados de la
+        última semana. Útil para revisar suscripciones y detectar subidas."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        items = analyst.recurring(svc, today=today, include_inactive=include_inactive)
+        return {
+            "today": today,
+            "recurring": [
+                {
+                    **json_safe(dataclasses.asdict(r)),
+                    "monthly_cents": r.monthly_cents,
+                    "rise_cents": r.rise_cents,
+                    "variable": r.variable,
+                }
+                for r in items
+            ],
+            "monthly_total_cents": sum(r.monthly_cents for r in items if r.active),
+            "duplicates": [
+                json_safe(dataclasses.asdict(d)) for d in analyst.duplicates(svc, today=today)
             ],
         }
 

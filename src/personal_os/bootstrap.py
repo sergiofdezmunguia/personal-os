@@ -36,6 +36,8 @@ PANEL_VIEWER_NAME = "Personal OS Panel.js"  # abre el panel en el iPhone (visor 
 WIDGET_SOURCE = BRIDGE_SOURCE.with_name("personal-os-widget.js")
 WIDGET_NAME = "Personal OS Widget.js"  # widget de pantalla de inicio (dinero + citas + tareas)
 APUNTAR_SOURCE = BRIDGE_SOURCE.with_name("apuntar.js")
+AVISOS_SOURCE = BRIDGE_SOURCE.with_name("avisos.js")
+AVISOS_NAME = "Personal OS Avisos.js"  # avisos del PC como notificaciones (lo llama el sync)
 APUNTAR_NAME = "Apuntar.js"  # frase en español → evento del Calendario del iPhone (Siri/Atajos)
 
 
