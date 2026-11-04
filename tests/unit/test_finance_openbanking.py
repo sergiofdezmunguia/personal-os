@@ -201,6 +201,9 @@ def test_trade_republic_provisional_rows_match_then_csv_adopts_them(svc):
     assert (out.rows_new, out.rows_linked) == (0, 1)
     ids = sorted(t.external_id for t in svc.list_transactions(limit=50))
     assert ids == ["real-0", "real-1", "real-9"]
+    # TR no da concepto por open banking: el del CSV sustituye al provisional.
+    adopted = [t for t in svc.list_transactions(limit=50) if t.external_id == "real-9"]
+    assert adopted[0].description == "Pago: BAR"
 
 
 # ------------------------------------------------------------------ pos sync
