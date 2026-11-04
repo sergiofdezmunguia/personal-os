@@ -180,3 +180,31 @@ def test_headline(svc, clock):
     assert "ahorrarás" not in early  # día 5: la proyección aún no se da
     later = panel.headline(insights.build(svc, today="2026-10-20"))
     assert "ahorrarás" in later
+
+
+def test_v2_tabs_and_extras(svc):
+    from personal_os.ops import panel_tabs
+
+    _months(svc)
+    p = insights.build(svc, today=TODAY)
+    log = "2026-10-04; pasos=9000; ejercicio=40; sueño=7,5\n"
+    x = panel_tabs.build_extras(svc, p, today=TODAY, alerts=[
+        {"title": "📈 Sube una cuota", "body": "Streaming inventado sube.", "kind": "alerta"}
+    ], health_text=log)  # fmt: skip
+    page = panel.render(p, generated_at="05/10/2026 09:00", extras=x)
+    for view in ("v-hoy", "v-dinero", "v-cartera", "v-habitos"):
+        assert f'id="{view}"' in page and f'data-view="{view}"' in page
+    assert 'id="agenda"' in page and "window.posAgenda" in page
+    assert "Streaming inventado sube." in page
+    assert "Cobros recurrentes" in page  # streaming mensual de los datos inventados
+    assert "9.000" in page  # pasos del día anterior
+
+
+def test_v2_without_health_explains_setup(svc):
+    from personal_os.ops import panel_tabs
+
+    _months(svc)
+    p = insights.build(svc, today=TODAY)
+    page = panel.render(p, generated_at="x", extras=panel_tabs.build_extras(
+        svc, p, today=TODAY, alerts=[], health_text=None))  # fmt: skip
+    assert "Aún no llegan datos de Salud" in page

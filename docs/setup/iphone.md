@@ -80,3 +80,21 @@ panel › index.html**, pero sin tooltips (Archivos no ejecuta JavaScript).
 POS_LIVE=1 uv run pytest -m live -v   # ciclo real crear/editar/borrar en iCloud Calendar
 uv run pos sync status
 ```
+
+
+## Atajo «Salud del día» (hábitos en el panel)
+
+Automatización personal → **Hora del día** 23:30, diaria, **Ejecutar inmediatamente**:
+
+1. **Buscar muestras de salud** · tipo *Pasos* · fecha de inicio *es hoy* → **Calcular
+   estadísticas** *Suma* → variable `Pasos`.
+2. Igual con *Minutos de ejercicio* → `Ejercicio`; *Energía alimentaria* (la escribe Fitia)
+   → `Kcal`.
+3. **Buscar muestras de salud** · tipo *Análisis del sueño* · fecha de inicio *en las últimas
+   24 horas* · valor *Dormido* (o *Núcleo/Profundo/REM*) → **Obtener detalles** *Duración* →
+   **Calcular estadísticas** *Suma* → **Calcular** ÷ 3600 → `Sueño` (horas).
+4. **Texto**: `Fecha actual (formato aaaa-MM-dd); pasos=Pasos; ejercicio=Ejercicio; sueño=Sueño; kcal=Kcal`
+5. **Añadir a archivo de texto** → iCloud Drive › PersonalOS-extractos › salud › `salud.txt`
+   (crear la carpeta la primera vez), *nueva línea* activado.
+
+El panel (pestaña Hábitos y «Ayer en Salud» en Hoy) lo lee en la siguiente sincronización.

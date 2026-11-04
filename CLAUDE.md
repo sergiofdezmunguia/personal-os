@@ -29,7 +29,7 @@ ops/          operación: `doctor` (diagnóstico, solo lectura) y `drill` (simul
 bootstrap.py  composition root: conecta todo (solo lo importan las interfaces)
 adapters/     comunicación con proveedores (apple/: buzón Recordatorios, CalDAV, iCalendar)
 sync/         ports (interfaces + DTOs), motores de sync, enlaces, auditoría de operaciones
-tasks/ calendar/ finance/   dominio; módulos hermanos independientes
+tasks/ calendar/ finance/ habits/   dominio; módulos hermanos independientes
 core/         db+migraciones, backups, ids, reloj, eventos, config, secretos, rrule
 bridge/scriptable/ ejecutor en el iPhone (JS); docs/protocol-reminders-v1.md es el contrato
 ```
@@ -102,6 +102,8 @@ Reglas impuestas por `lint-imports`:
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
   de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.
+- Panel v2 con pestañas Hoy · Dinero · Cartera · Hábitos (`ops/panel_tabs.py`); hábitos de
+  Apple Salud por fichero (`habits/health.py`, ADR 0013); la agenda la inyecta el visor.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
   (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.
   Para revisar su diseño, renderízalo con datos inventados, nunca con los reales.
