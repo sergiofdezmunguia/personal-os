@@ -53,3 +53,15 @@ def test_outcome_in_euros_after_fees_and_tax():
     assert o.gain_cents == round((25000 - 200) * 0.81) and o.loss_cents == 15000 + 200
     v = satellite.Idea("vigilar", "X", "X", "X.DE", Decimal(100), "", 0, Decimal(85), Decimal(125))
     assert satellite.outcome(v).amount_cents == 100000  # sin importe: por cada 1.000 €
+
+
+def test_panel_shows_backtest_card():
+    from personal_os.ops import panel_tabs
+
+    r = backtest.run({"UP": days(ramp(100, 160, 300) + ramp(158, 128, 15) + ramp(130, 170, 60))},
+                     days([100] * 400), CFG)  # fmt: skip
+    o = satellite.Overview("2026-10-05", satellite.Budget(0, 0, 0, 0, 0, 0, 0), [], [], [],
+                           satellite.Taxes(2026, 0, 0), None, [])  # fmt: skip
+    html = panel_tabs.tab_ideas(panel_tabs.Extras(satellite=o, backtest=r))
+    assert "Prueba histórica de tus reglas" in html
+    assert "les fue mal" in html

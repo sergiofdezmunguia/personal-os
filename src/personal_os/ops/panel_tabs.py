@@ -373,6 +373,22 @@ def tab_ideas(x: Extras) -> str:
         cls = "good" if v.diff_cents >= 0 else "warn"
         parts.append(f"""<div class="panel"><div class="row-between"><h3>¿Le gana al índice?</h3><span class="pill {cls}">{eur(v.diff_cents, sign=True)}</span></div>
           <p class="hero-of">Desde {short_day(v.since)}: el satélite vale {eur(v.satellite_cents)}; lo mismo en el MSCI World valdría {eur(v.benchmark_cents)}.</p></div>""")  # fmt: skip
+    if x.backtest is not None and x.backtest.trades:
+        r = x.backtest
+        bench = r.bench_pnl_cents
+        vs = (
+            f" · el mismo dinero en el MSCI World: {eur(bench, sign=True)}"
+            if bench is not None
+            else ""
+        )
+        avg = f"{r.avg_pct:+.1f}".replace(".", ",") if r.avg_pct is not None else "—"
+        parts.append(f"""<div class="panel"><h3>Prueba histórica de tus reglas (5 años)</h3>
+          <div class="facts">
+            <div class="fact"><div class="k">Operaciones</div><div class="v">{len(r.trades)}</div><div class="n">{len(r.closed)} cerradas · {round(r.avg_days or 0)} sesiones de media</div></div>
+            <div class="fact"><div class="k">Aciertos</div><div class="v">{round(r.win_rate or 0)} %</div><div class="n">media {avg} % por operación</div></div>
+          </div>
+          <p class="hero-of">Con {eur(r.trade_cents)} por operación: {eur(r.pnl_cents, sign=True)} ({eur(r.net_cents, sign=True)} tras IRPF){vs}.</p>
+          <p class="small0 warnline">⚠ Ojo: la lista son empresas que hoy sabemos que fueron ganadoras. Con las mismas reglas sobre grandes valores a los que les fue mal (Intel, PayPal, Nike, Bayer…) se acierta 1 de cada 3 y se pierde dinero. La ventaja está en elegir bien qué comprar, no en la caída.</p></div>""")  # fmt: skip
     parts.append(
         '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. Las órdenes las das tú en Trade Republic.</p>'
     )
