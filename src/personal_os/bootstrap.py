@@ -33,6 +33,10 @@ BRIDGE_SOURCE = (
 BRIDGE_SCRIPT_NAME = "Personal OS Sync.js"
 PANEL_VIEWER_SOURCE = BRIDGE_SOURCE.with_name("personal-os-panel.js")
 PANEL_VIEWER_NAME = "Personal OS Panel.js"  # abre el panel en el iPhone (visor con JavaScript)
+WIDGET_SOURCE = BRIDGE_SOURCE.with_name("personal-os-widget.js")
+WIDGET_NAME = "Personal OS Widget.js"  # widget de pantalla de inicio (dinero + citas + tareas)
+APUNTAR_SOURCE = BRIDGE_SOURCE.with_name("apuntar.js")
+APUNTAR_NAME = "Apuntar.js"  # frase en español → evento del Calendario del iPhone (Siri/Atajos)
 
 
 @dataclass

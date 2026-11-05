@@ -201,6 +201,9 @@ def test_trade_republic_provisional_rows_match_then_csv_adopts_them(svc):
     assert (out.rows_new, out.rows_linked) == (0, 1)
     ids = sorted(t.external_id for t in svc.list_transactions(limit=50))
     assert ids == ["real-0", "real-1", "real-9"]
+    # TR no da concepto por open banking: el del CSV sustituye al provisional.
+    adopted = [t for t in svc.list_transactions(limit=50) if t.external_id == "real-9"]
+    assert adopted[0].description == "Pago: BAR"
 
 
 # ------------------------------------------------------------------ pos sync
@@ -287,3 +290,24 @@ def test_varying_offset_is_rejected(svc):
     )
     with pytest.raises(FinanceError, match="no cuadra"):
         do_import(svc, account, st)
+
+
+def test_second_bank_query_after_constant_offset_is_accepted(svc):
+    # CSV: −1 € al día del 20 al 25 de septiembre (saldo encadenado desde 0).
+    days = [f"2026-09-{d:02d}" for d in range(20, 26)]
+    seed(svc, "trade_republic", [(d, -100) for d in days], kind="broker", ids=True)
+    account = svc.list_accounts()[0]
+    new_days = ["2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29", "2026-09-30", "2026-10-01"]
+    raw = [tx(d, -2) for d in reversed(new_days)] + [tx(d, -1) for d in reversed(days)]
+
+    def query(balance, sha):
+        st = parse(raw, balance, institution="trade_republic", fallback_description="TR")
+        return do_import(svc, account, st, sha=sha)
+
+    # 1.ª consulta: desfase constante con el CSV (+20 €) y 6 días nuevos provisionales.
+    res = query("2", "eb1")
+    assert res.rows_new == 6 and any("+20.00 €" in w for w in res.warnings)
+    # 2.ª consulta: TR descuenta del saldo un pago pendiente (−5 €) que aún no lista. Los 6
+    # días provisionales ya conocidos no deben compararse con su propio saldo anterior.
+    res = query("-3", "eb2")
+    assert res.rows_new == 0 and any("+15.00 €" in w for w in res.warnings)

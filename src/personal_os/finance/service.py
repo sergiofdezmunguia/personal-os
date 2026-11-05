@@ -259,7 +259,7 @@ class FinanceService:
             )
             counts: Counter = Counter()
             new_ids = []
-            linked = self._link_existing(account.id, statement, now)
+            linked, relabeled = self._link_existing(account.id, statement, now)
             already, offset = self._match_provisional(account.id, statement, linked)
             if offset:
                 warnings.append(
@@ -311,7 +311,7 @@ class FinanceService:
                 "UPDATE fin_imports SET rows_new = ?, rows_duplicate = ? WHERE id = ?",
                 (len(new_ids), duplicates, import_id),
             )
-            categorized = self._apply_rules(ctx, new_ids)
+            categorized = self._apply_rules(ctx, new_ids + relabeled)
             self.events.record(
                 ctx,
                 "finance.import.completed",
@@ -382,16 +382,20 @@ class FinanceService:
                 "movimiento); este extracto no hace falta. Usa la exportación CSV más reciente."
             )
 
-    def _link_existing(self, account_id: str, st: ParsedStatement, now: str) -> set[str]:
+    def _link_existing(
+        self, account_id: str, st: ParsedStatement, now: str
+    ) -> tuple[set[str], list[str]]:
         """Movimientos con id del banco que ya estaban importados de otra fuente (sin id):
         mismo importe y fecha a ±`adopt_days`. Se les pone el id y conservan categoría,
-        descripción y saldo. Devuelve los ids enlazados.
+        descripción y saldo; salvo los provisionales de open banking, que toman el concepto
+        del fichero (TR no lo da por open banking). Devuelve los ids enlazados y los
+        movimientos cuyo concepto ha cambiado.
 
         Antes de enlazar se contrasta el saldo al cierre de los días comunes: si el fichero
         no cuadra con lo importado (p. ej. una exportación parcial), se rechaza."""
         incoming = [t for t in st.transactions if t.external_id]
         if not incoming:
-            return set()
+            return set(), []
         known = {
             r["external_id"]
             for r in self.db.all(
@@ -413,6 +417,7 @@ class FinanceService:
 
         pending = [t for t in incoming if t.external_id not in known]
         matches: dict[str, str] = {}  # external_id → txn id
+        relabel: dict[str, str] = {}  # txn id → concepto del fichero
         used: set[str] = set()
         for tolerance in range(st.adopt_days + 1):
             for tx in pending:
@@ -429,16 +434,22 @@ class FinanceService:
                     if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
                         matches[tx.external_id] = r["id"]
                         used.add(r["id"])
+                        if r["external_id"] and not tx.external_id.startswith(PROVISIONAL):
+                            relabel[r["id"]] = tx.description
                         break
 
-        # Saldo al cierre de cada día según el fichero frente al ya importado.
+        # Saldo al cierre de cada día según el fichero frente al ya importado. Los ids
+        # provisionales ya conocidos no cuentan: su saldo lo puso una consulta anterior de open
+        # banking y los días antiguos pueden mezclar fuentes (el desfase constante lo trata
+        # `_match_provisional`).
         incoming_eod = {t.booking_date: t.balance_after_cents for t in incoming}
         common = [
             d
             for d in {
                 t.booking_date
                 for t in incoming
-                if t.external_id in matches or t.external_id in known
+                if t.external_id in matches
+                or (t.external_id in known and not t.external_id.startswith(PROVISIONAL))
             }
             if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
         ]
@@ -455,7 +466,12 @@ class FinanceService:
                 "UPDATE fin_transactions SET external_id = ?, updated_at = ? WHERE id = ?",
                 (ext, now, txn_id),
             )
-        return set(matches)
+        for txn_id, description in relabel.items():
+            self.db.execute(
+                "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                (description, now, txn_id),
+            )
+        return set(matches), list(relabel)
 
     def _match_provisional(
         self, account_id: str, st: ParsedStatement, linked: set[str]
