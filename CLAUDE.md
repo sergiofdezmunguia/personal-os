@@ -64,7 +64,7 @@ Reglas impuestas por `lint-imports`:
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
   `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
   `list_category_rules`, `propose_category_rule`, `categorize_transactions`,
-  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`. Actor de
+  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`, `satellite_overview`. Actor de
   auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos) y 0012 (precios diarios).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios) y 0014 (satélite).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -99,6 +99,8 @@ Reglas impuestas por `lint-imports`:
   enmascarada; cada consulta gasta cupo del banco.
 - Analista (ADR 0011): `finance/analyst.py` (recurrentes, subidas, duplicados, semana) y
   `ops/notices.py` → `panel/avisos.json` → notificaciones con `Personal OS Avisos.js`.
+- Satélite (ADR 0014): `finance/satellite.py`, reglas en `[finance.satellite]`, pestaña Ideas,
+  MCP `satellite_overview`, skill `satellite-review`. Ideas, nunca órdenes ni promesas.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
   de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.

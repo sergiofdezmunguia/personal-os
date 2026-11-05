@@ -25,7 +25,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
-from personal_os.finance import analyst, investments
+from personal_os.finance import analyst, insights, investments, satellite
 from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
@@ -429,6 +429,35 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                 json_safe(dataclasses.asdict(d)) for d in analyst.duplicates(svc, today=today)
             ],
         }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def satellite_overview() -> dict[str, Any]:
+        """Cartera satélite por reglas (solo lectura, céntimos; ADR 0014): presupuesto
+        disponible (tras colchón de emergencia y plan), ideas de compra/venta/vigilar sobre la
+        lista de seguimiento con stop y objetivo, señales técnicas (caída desde máximos de 52
+        semanas, medias de 50/200, RSI), impuestos del año (base del ahorro) y comparación con
+        el índice. Son ideas por reglas, no órdenes: el usuario decide y opera en su bróker."""
+        application = open_app()
+        cfg = application.config.finance.satellite
+        if not cfg.enabled:
+            raise ToolError("Sin lista de seguimiento en [finance.satellite] de config.toml")
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        habit = insights.build(svc, today=today).habit.expense_cents
+        o = satellite.overview(svc, cfg, today=today, monthly_expense_cents=habit)
+        return json_safe({
+            "today": today,
+            "budget": {**dataclasses.asdict(o.budget), "available_cents": o.budget.available_cents,
+                       "free_cash_cents": o.budget.free_cash_cents, "why_zero": o.budget.why_zero},
+            "ideas": [dataclasses.asdict(i) for i in o.ideas],
+            "signals": [{**dataclasses.asdict(s), "drawdown_pct": round(s.drawdown, 1),
+                         "healthy_trend": s.healthy_trend} for s in o.signals],
+            "positions": [dataclasses.asdict(p) for p in o.positions],
+            "taxes": {**dataclasses.asdict(o.taxes), "tax_cents": o.taxes.tax_cents},
+            "versus_benchmark": dataclasses.asdict(o.versus) if o.versus else None,
+            "rules": dataclasses.asdict(cfg),
+        })  # fmt: skip
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def investments_overview(months: int = 12) -> dict[str, Any]:

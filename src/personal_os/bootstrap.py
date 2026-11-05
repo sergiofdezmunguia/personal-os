@@ -305,7 +305,8 @@ def update_prices(application: App, *, force: bool = False, client=None):
 
     svc = finance_service(application)
     isins = investments.open_isins(svc)
-    if not isins:
+    sat = application.config.finance.satellite
+    if not isins and not sat.enabled:
         return None
     now = application.clock.now()
     last = investments.last_price_fetch(svc)
@@ -327,7 +328,34 @@ def update_prices(application: App, *, force: bool = False, client=None):
     stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     report.stats["isins"] = len(isins)
     report.stats["prices_new"] = investments.store_prices(svc, rows, fetched_at=stamp)
+    if sat.enabled:
+        report.stats["market_prices_new"] = _update_market_prices(
+            svc, sat, client, report, stamp=stamp
+        )
     return report
+
+
+def _update_market_prices(svc, sat, client, report, *, stamp: str) -> int:
+    """Histórico de la lista de seguimiento y del índice de referencia (ADR 0014): la primera
+    vez 5 años (para comparar operaciones antiguas con el índice), después el último mes."""
+    from personal_os.adapters.quotes import QuoteError, history
+    from personal_os.finance import satellite
+
+    new = 0
+    for symbol in [w.symbol for w in sat.watch] + [sat.benchmark]:
+        range_ = "1mo" if satellite.history_start(svc, symbol) else "5y"
+        try:
+            h = history(client, symbol, range_=range_)
+        except QuoteError as exc:
+            report.errors.append(str(exc))
+            continue
+        if h.currency != "EUR":
+            report.errors.append(
+                f"{symbol} cotiza en {h.currency}, no en EUR: usa su símbolo de Xetra"
+            )
+            continue
+        new += satellite.store_history(svc, symbol, h.currency, h.closes, fetched_at=stamp)
+    return new
 
 
 def applepay_enrich(application: App):

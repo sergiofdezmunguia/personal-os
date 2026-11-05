@@ -89,3 +89,32 @@ class QuotesClient:
                 for ts, v in reversed(pairs[-2:])
             ]
         return []
+
+
+@dataclass(frozen=True)
+class History:
+    symbol: str
+    currency: str
+    closes: list[tuple[str, Decimal]]  # (día, cierre), del más antiguo al más reciente
+
+
+def history(client: QuotesClient, symbol: str, *, range_: str = "1y") -> History:
+    """Cierres diarios de un símbolo de Yahoo (p. ej. «APC.DE»)."""
+    try:
+        r = client.http.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            params={"range": range_, "interval": "1d"},
+        )
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+        closes = res["indicators"]["quote"][0]["close"]
+        pairs = [
+            (datetime.fromtimestamp(ts, UTC).date().isoformat(), Decimal(str(round(v, 4))))
+            for ts, v in zip(res["timestamp"], closes, strict=False)
+            if v
+        ]
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        raise QuoteError(f"Sin histórico para {symbol} ({type(exc).__name__})") from exc
+    if not pairs:
+        raise QuoteError(f"Sin histórico para {symbol}")
+    return History(symbol, res["meta"].get("currency", ""), pairs)

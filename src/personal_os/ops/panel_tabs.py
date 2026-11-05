@@ -14,7 +14,7 @@ import html
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from personal_os.finance import analyst, investments
+from personal_os.finance import analyst, investments, satellite
 from personal_os.finance.insights import Panel
 from personal_os.habits import health
 
@@ -52,10 +52,17 @@ class Extras:
     plan: list[investments.PlanLine] = field(default_factory=list)
     habits: health.Summary | None = None
     habits_file: bool = False
+    satellite: satellite.Overview | None = None
 
 
 def build_extras(
-    svc, panel: Panel, *, today: str, alerts: list[dict], health_text: str | None
+    svc,
+    panel: Panel,
+    *,
+    today: str,
+    alerts: list[dict],
+    health_text: str | None,
+    sat: satellite.Overview | None = None,
 ) -> Extras:
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     summary = None
@@ -70,6 +77,7 @@ def build_extras(
         plan=investments.deduce_plan(svc, today),
         habits=summary,
         habits_file=health_text is not None,
+        satellite=sat,
     )
 
 
@@ -290,13 +298,87 @@ def tab_habits(x: Extras) -> str:
     </section>"""
 
 
+# --------------------------------------------------------------------------- Ideas (satélite)
+
+KIND = {"comprar": ("good", "Comprar"), "vender": ("warn", "Vender"), "vigilar": ("", "Vigilar")}
+
+
+def _price(x) -> str:
+    return f"{x:,.2f}".replace(",", "·").replace(".", ",").replace("·", ".") + " €"
+
+
+def tab_ideas(x: Extras) -> str:
+    o = x.satellite
+    if o is None:
+        body = '<div class="panel"><p class="muted">Sin lista de seguimiento. Añádela en <code>[finance.satellite]</code> de config.toml.</p></div>'
+        return (
+            f'<section class="view" id="v-ideas" aria-label="Ideas"><h2>Ideas</h2>{body}</section>'
+        )
+    b = o.budget
+    why = f'<div class="note">{esc(b.why_zero)}</div>' if b.why_zero else ""
+    parts = [f"""<div class="panel">
+      <div class="facts">
+        <div class="fact"><div class="k">Disponible para el satélite</div><div class="v">{eur(b.available_cents)}</div><div class="n">máx. {eur(b.per_trade_cents)} por operación</div></div>
+        <div class="fact"><div class="k">Tope del satélite</div><div class="v">{eur(b.cap_cents)}</div><div class="n">invertido {eur(b.invested_cents)}</div></div>
+        <div class="fact"><div class="k">Efectivo libre</div><div class="v">{eur(b.free_cash_cents)}</div><div class="n">tras colchón {eur(b.emergency_cents)} y plan {eur(b.plan_cents)}</div></div>
+      </div>{why}</div>"""]  # fmt: skip
+    cards = []
+    order = {"vender": 0, "comprar": 1, "vigilar": 2}
+    for i in sorted(o.ideas, key=lambda i: order[i.kind]):
+        cls, label = KIND[i.kind]
+        amount = (
+            f'<div class="big-line"><b>{eur(i.amount_cents)}</b> propuestos</div>'
+            if i.kind == "comprar"
+            else ""
+        )
+        levels = (f'<p class="muted small0">Stop {_price(i.stop)} · objetivo {_price(i.target)}</p>'
+                  if i.stop and i.kind != "vender" else "")  # fmt: skip
+        warns = "".join(f'<p class="small0 warnline">⚠ {esc(w)}</p>' for w in i.warnings)
+        cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{esc(i.name)}</h3>
+          <span class="pill {cls}">{label}</span></div>
+          <p class="hero-of">{_price(i.price)} · {esc(i.reason)}</p>{amount}{levels}{warns}</div>""")  # fmt: skip
+    if not cards:
+        cards.append(
+            '<div class="panel"><p class="muted">Nada cumple las reglas hoy. Lo normal: la mayoría de los días no hay que hacer nada.</p></div>'
+        )
+    parts += cards
+    rows = "".join(
+        f'<div class="li"><span>{esc(s.name)}<small>RSI {f"{s.rsi14:.0f}" if s.rsi14 is not None else "—"} · '
+        f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200</small></span>"
+        f'<span class="num">−{s.drawdown:.0f} %</span></div>'
+        for s in sorted(o.signals, key=lambda s: -s.drawdown)
+    )
+    parts.append(
+        f'<div class="panel"><h3>Lista de seguimiento · caída desde máximos</h3><div class="list">{rows}</div></div>'
+    )
+    t = o.taxes
+    harvest = "".join(
+        f"<li>{esc(p.name)}: {eur((p.value_cents or 0) - p.cost_cents)}</li>" for p in o.harvest
+    )
+    harvest_html = (f'<p class="small0">Antes de fin de año podrías compensar con estas pérdidas latentes:</p><ul class="small0">{harvest}</ul>'
+                    if harvest else "")  # fmt: skip
+    parts.append(f"""<div class="panel"><h3>Hacienda {t.year}</h3>
+      <p class="hero-of">Ganancias realizadas {eur(t.realized_cents)} + dividendos {eur(t.dividends_cents)} → unos <b>{eur(t.tax_cents)}</b> de IRPF (base del ahorro, 19–30 %).</p>
+      {harvest_html}<p class="muted small">Todo se declara. Las pérdidas compensan ganancias (y se arrastran 4 años); si recompras lo mismo en menos de 2 meses tras vender con pérdidas, esa pérdida no computa todavía.</p></div>""")  # fmt: skip
+    if o.versus:
+        v = o.versus
+        cls = "good" if v.diff_cents >= 0 else "warn"
+        parts.append(f"""<div class="panel"><div class="row-between"><h3>¿Le gana al índice?</h3><span class="pill {cls}">{eur(v.diff_cents, sign=True)}</span></div>
+          <p class="hero-of">Desde {short_day(v.since)}: el satélite vale {eur(v.satellite_cents)}; lo mismo en el MSCI World valdría {eur(v.benchmark_cents)}.</p></div>""")  # fmt: skip
+    parts.append(
+        '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. Las órdenes las das tú en Trade Republic.</p>'
+    )
+    return f'<section class="view" id="v-ideas" aria-label="Ideas"><h2>Ideas</h2>{"".join(parts)}</section>'
+
+
 # --------------------------------------------------------------------------- estilos y JS
 
 CSS = """
 .tabs{display:none}
 html.js .view{display:none}html.js .view.on{display:grid;gap:14px}
 html.js .tabs{display:block;position:fixed;left:0;right:0;bottom:0;z-index:20;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--ring);padding:6px max(8px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
-.tabs nav{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.tabs nav{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
+.warnline{color:var(--warn-ink);margin:4px 0 0}.idea .hero-of{margin-top:4px}
 .tabs button{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;color:var(--muted);background:none;border:0;font:500 11.5px var(--ui);cursor:pointer}
 .tabs button span.i{font-size:20px;line-height:1}
 .tabs button[aria-current="page"]{color:var(--s1)}
@@ -366,5 +448,6 @@ TABS = """<div class="tabs" role="navigation" aria-label="Secciones"><nav>
 <button type="button" data-view="v-hoy"><span class="i" aria-hidden="true">☀️</span>Hoy</button>
 <button type="button" data-view="v-dinero"><span class="i" aria-hidden="true">💶</span>Dinero</button>
 <button type="button" data-view="v-cartera"><span class="i" aria-hidden="true">📈</span>Cartera</button>
+<button type="button" data-view="v-ideas"><span class="i" aria-hidden="true">💡</span>Ideas</button>
 <button type="button" data-view="v-habitos"><span class="i" aria-hidden="true">🏃</span>Hábitos</button>
 </nav></div>"""

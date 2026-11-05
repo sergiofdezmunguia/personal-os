@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from personal_os.finance import insights
+from personal_os.finance import insights, satellite
 from personal_os.finance.insights import CUT_SHARE, Panel
 from personal_os.finance.models import fmt_eur
 from personal_os.ops import notices, panel_tabs
@@ -590,6 +590,7 @@ def render(p: Panel, *, generated_at: str, extras: panel_tabs.Extras | None = No
 </section>
 </section>
 {panel_tabs.tab_portfolio(p, x)}
+{panel_tabs.tab_ideas(x)}
 {panel_tabs.tab_habits(x)}
 </div>
 {panel_tabs.TABS}
@@ -638,11 +639,19 @@ def generate(application) -> PanelResult:
     svc = bootstrap.finance_service(application)
     today = now.date().isoformat()
     panel = insights.build(svc, today=today)
-    notice_list = notices.build(svc, panel, now)
+    sat_cfg = application.config.finance.satellite
+    sat = (
+        satellite.overview(
+            svc, sat_cfg, today=today, monthly_expense_cents=panel.habit.expense_cents
+        )
+        if sat_cfg.enabled
+        else None
+    )
+    notice_list = notices.build(svc, panel, now, satellite=sat)
     extras = panel_tabs.build_extras(
         svc, panel, today=today,
         alerts=[n for n in notice_list if n["kind"] == "alerta"],
-        health_text=_read_health(application.config),
+        health_text=_read_health(application.config), sat=sat,
     )  # fmt: skip
     page = render(panel, generated_at=now.strftime("%d/%m/%Y %H:%M"), extras=extras)
     folder = panel_dir(application.config)

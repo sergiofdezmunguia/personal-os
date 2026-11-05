@@ -174,8 +174,30 @@ def alerts(svc, now: datetime) -> list[dict]:
     return out
 
 
-def build(svc, panel, now: datetime) -> list[dict]:
-    items = [morning(svc, panel, now), weekly(svc, panel, now), *alerts(svc, now)]
+def ideas(sat, now: datetime) -> list[dict]:
+    """Ideas del satélite que piden actuar (comprar o vender): una vez por semana y valor."""
+    if sat is None:
+        return []
+    week = now.strftime("%G-W%V")
+    out = []
+    for i in sat.ideas:
+        if i.kind == "comprar":
+            body = (f"{i.name} cae un {i.reason.split(' ')[0][1:]} desde máximos. Idea: hasta "
+                    f"{eur(i.amount_cents, decimals=False)} (stop {i.stop} €). Míralo en el panel.")  # fmt: skip
+            title = "💡 Idea de compra"
+        elif i.kind == "vender":
+            body = f"{i.name}: {i.reason} Míralo en el panel."
+            title = "💡 Idea de venta"
+        else:
+            continue
+        out.append(_notice(f"idea:{i.kind}:{i.isin}:{week}", title, body, now,
+                           now + timedelta(days=ALERT_DAYS)))  # fmt: skip
+    return out
+
+
+def build(svc, panel, now: datetime, *, satellite=None) -> list[dict]:
+    items = [morning(svc, panel, now), weekly(svc, panel, now), *alerts(svc, now),
+             *ideas(satellite, now)]  # fmt: skip
     return [n for n in items if n]
 
 

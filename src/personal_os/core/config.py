@@ -65,9 +65,35 @@ class CashYieldConfig:
 
 
 @dataclass(frozen=True)
+class WatchItem:
+    isin: str
+    symbol: str  # símbolo de Yahoo en EUR (p. ej. «APC.DE», Xetra)
+    name: str
+
+
+@dataclass(frozen=True)
+class SatelliteConfig:
+    """Cartera satélite de compras por reglas (ADR 0014). Porcentajes en %."""
+
+    share: float = 5.0  # tope del satélite sobre el patrimonio
+    emergency_months: float = 6.0  # meses de gasto que nunca se tocan
+    dip: float = 15.0  # caída desde el máximo de 52 semanas para proponer compra
+    stop: float = 15.0  # pérdida para proponer vender
+    take_profit: float = 25.0  # ganancia para proponer vender
+    max_trade: float = 25.0  # % del satélite por operación
+    benchmark: str = "EUNL.DE"  # índice de referencia (iShares Core MSCI World, Xetra)
+    watch: tuple[WatchItem, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.watch)
+
+
+@dataclass(frozen=True)
 class FinanceConfig:
     inbox_dir: Path | None = None  # carpeta (iCloud Drive) donde dejas los extractos
     cash_yield: tuple[CashYieldConfig, ...] = ()
+    satellite: SatelliteConfig = field(default_factory=SatelliteConfig)
 
 
 @dataclass(frozen=True)
@@ -179,8 +205,28 @@ def _load_finance(f: dict, path: Path) -> FinanceConfig:
         raise ConfigError("[finance.cash_yield] los tipos van en % (0–100)")
     inbox = f.get("inbox_dir")
     return FinanceConfig(
-        inbox_dir=Path(inbox).expanduser() if inbox else None, cash_yield=tuple(yields)
+        inbox_dir=Path(inbox).expanduser() if inbox else None,
+        cash_yield=tuple(yields),
+        satellite=_load_satellite(f.get("satellite") or {}, path),
     )
+
+
+def _load_satellite(s: dict, path: Path) -> SatelliteConfig:
+    try:
+        watch = tuple(
+            WatchItem(str(w["isin"]).strip().upper(), str(w["symbol"]).strip(), str(w["name"]))
+            for w in s.get("watch", [])
+        )
+        numbers = {
+            k: float(s[k])
+            for k in ("share", "emergency_months", "dip", "stop", "take_profit", "max_trade")
+            if k in s
+        }
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ConfigError(f"Sección [finance.satellite] inválida en {path}: {exc}") from exc
+    if any(not 0 <= v <= 100 for k, v in numbers.items() if k != "emergency_months"):
+        raise ConfigError("[finance.satellite] los porcentajes van de 0 a 100")
+    return SatelliteConfig(**numbers, benchmark=str(s.get("benchmark", "EUNL.DE")), watch=watch)
 
 
 CONFIG_TEMPLATE = """\
@@ -217,6 +263,20 @@ keep_monthly = 12
 # interest_rate = 2.5
 # saveback_rate = 1.0
 # saveback_cap = 15     # € al mes, si lo hay
+
+# Cartera satélite de compras por reglas (ADR 0014): ideas en el panel, nunca órdenes.
+# [finance.satellite]
+# share = 5               # % del patrimonio como máximo
+# emergency_months = 6    # meses de gasto intocables
+# dip = 15                # % de caída desde el máximo de 52 semanas para proponer compra
+# stop = 15               # % de pérdida para proponer vender
+# take_profit = 25        # % de ganancia para proponer vender
+# max_trade = 25          # % del satélite por operación
+# benchmark = "EUNL.DE"   # con qué se compara (MSCI World)
+# [[finance.satellite.watch]]
+# isin = "US0378331005"
+# symbol = "APC.DE"
+# name = "Apple"
 """
 
 
