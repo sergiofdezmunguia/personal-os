@@ -6,6 +6,8 @@ Lo usan las interfaces (CLI, MCP). Ninguna otra capa lo importa.
 from __future__ import annotations
 
 import fcntl
+import hashlib
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -271,7 +273,113 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
             report = _finance_inbox_report(application)
             if report is not None:
                 outcome.reports.append(report)
+            report = bank_sync(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+# Open banking (ADR 0010). alias de la sesión → (entidad, tipo de cuenta, concepto si falta).
+BANKS = {
+    "santander": ("santander", "bank", "Movimiento sin concepto"),
+    "traderepublic": ("trade_republic", "broker", "Trade Republic · sin concepto"),
+}
+BANK_MIN_HOURS = 5  # PSD2 limita las consultas desatendidas (~4 al día por cuenta)
+BANK_DAYS = 30  # ventana de movimientos que se piden en cada consulta
+BANK_RENEW_DAYS = 14  # avisa de renovar la autorización con esta antelación
+
+
+def bank_sync(application: App, *, days: int = BANK_DAYS, force: bool = False, client=None):
+    """Trae saldo y movimientos de los bancos autorizados. None si no está configurado.
+    Nunca interrumpe la sync: los fallos van como errores del informe."""
+    from datetime import datetime, timedelta
+
+    from personal_os.adapters.enablebanking import BankingError, EnableBankingClient
+    from personal_os.core.clock import to_iso
+    from personal_os.core.events import ChangeContext
+    from personal_os.core.ids import new_id
+    from personal_os.finance.importers import StatementError
+    from personal_os.finance.importers import enablebanking as eb
+    from personal_os.finance.models import FinanceError
+    from personal_os.sync.store import SyncReport
+
+    cred_dir = application.config.config_dir / "enablebanking"
+    if client is None:
+        if not cred_dir.is_dir():
+            return None
+        try:
+            client = EnableBankingClient(cred_dir)
+        except BankingError as exc:
+            report = SyncReport(run_id=new_id("correlation"), provider="bank")
+            report.errors.append(str(exc))
+            return report
+    report = SyncReport(run_id=new_id("correlation"), provider="bank")
+    now = application.clock.now()
+    svc = finance_service(application)
+    last = application.db.one(
+        "SELECT MAX(imported_at) AS t FROM fin_imports WHERE source = ?", (eb.SOURCE,)
+    )
+    if not force and last and last["t"]:
+        since = now - datetime.fromisoformat(last["t"].replace("Z", "+00:00"))
+        if since < timedelta(hours=BANK_MIN_HOURS):
+            report.stats["skipped_recent"] = 1
+            return report
+    today = now.astimezone(ZoneInfo(application.config.timezone)).date()
+    date_from = (today - timedelta(days=days)).isoformat()
+    for session in client.sessions():
+        if session.alias not in BANKS:
+            report.warnings.append(f"{session.alias}: banco desconocido, se ignora")
+            continue
+        institution, kind, fallback = BANKS[session.alias]
+        if session.valid_until and session.valid_until < to_iso(now):
+            report.errors.append(
+                f"{session.alias}: la autorización caducó el {session.valid_until[:10]};"
+                " renuévala (docs/finance.md, «Open banking»)"
+            )
+            continue
+        if session.valid_until and session.valid_until < to_iso(
+            now + timedelta(days=BANK_RENEW_DAYS)
+        ):
+            report.warnings.append(
+                f"{session.alias}: la autorización caduca el {session.valid_until[:10]};"
+                " renuévala (docs/finance.md, «Open banking»)"
+            )
+        accounts = [a for a in svc.list_accounts() if a.institution == institution]
+        if len(accounts) != 1:
+            report.errors.append(
+                f"{session.alias}: necesito exactamente una cuenta de {institution} ya"
+                f" importada (hay {len(accounts)}); importa primero un extracto"
+            )
+            continue
+        for uid in session.accounts:
+            try:
+                balances = client.balances(uid)
+                txs = client.transactions(uid, date_from=date_from)
+                statement = eb.parse(
+                    institution=institution,
+                    account_name=accounts[0].name,
+                    account_kind=kind,
+                    balances=balances,
+                    transactions=txs,
+                    fallback_description=fallback,
+                )
+                payload = json.dumps([balances, txs], sort_keys=True).encode()
+                result = svc.import_statement(
+                    ChangeContext.system(),
+                    statement,
+                    file_name=f"open banking · {session.alias} · {today.isoformat()}",
+                    file_sha256=hashlib.sha256(payload).hexdigest(),
+                    account_id=accounts[0].id,
+                )
+            except (BankingError, StatementError, FinanceError) as exc:
+                report.errors.append(f"{session.alias}: {exc}")
+                continue
+            report.inc("accounts")
+            report.inc("transactions_new", result.rows_new)
+            report.inc("transactions_linked", result.rows_linked)
+            report.warnings.extend(f"{session.alias}: {w}" for w in result.warnings
+                                   if not result.already_imported)  # fmt: skip
+    return report
 
 
 def _finance_inbox_report(application: App):

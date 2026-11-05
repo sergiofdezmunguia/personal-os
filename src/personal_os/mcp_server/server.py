@@ -353,7 +353,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         rendimiento del efectivo (intereses y saveback esperados vs abonados; estimación)."""
         application = open_app()
         if month is None:
-            today = datetime.now(ZoneInfo(application.config.timezone)).date()
+            today = application.clock.now().astimezone(ZoneInfo(application.config.timezone)).date()
             month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
         try:
             mc = bootstrap.finance_month_close(application, month)

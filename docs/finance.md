@@ -74,6 +74,31 @@ Al importar el CSV, los movimientos que ya venían del PDF «Extracto de cuenta�
 falta. Las compras del plan van a `inversion` (traspaso, fuera del neto) por las reglas de
 siempre.
 
+## Open banking (Santander y efectivo de TR)
+
+Desde el ADR 0010, `pos sync` trae a diario el saldo y los movimientos de las cuentas
+autorizadas con [Enable Banking](https://enablebanking.com) (PSD2, gratis para uso personal),
+sin exportar nada. También a mano: `uv run pos finance bank-sync [--days 90] [--force]`.
+
+- Credenciales en `~/.config/personal-os/enablebanking/` (0600): `<app_id>.pem` (clave de la
+  aplicación) y `sessions.json` (una sesión por banco, `santander` y `traderepublic`). Nunca
+  se imprimen ni se copian al repo.
+- Como mucho una consulta cada 5 h (PSD2 limita a ~4 al día por cuenta; el banco responde
+  HTTP 429 si se pasa) y una ventana de 30 días.
+- **Santander** da id por movimiento (`entry_reference`): lo ya importado del Excel se enlaza
+  (no se duplica) y conserva su categoría. Desde entonces el Excel deja de hacer falta.
+- **Trade Republic** solo da fecha e importe, sin concepto ni id, y solo los 100 últimos:
+  entran con un id provisional (`prov:…`) y descripción «Trade Republic · sin concepto». Si
+  ya existe un movimiento con el mismo importe a ±3 días, no se duplica. Al importar más
+  tarde el CSV de TR, su id real sustituye al provisional y la descripción es la del CSV.
+- El saldo tras cada movimiento se reconstruye desde el saldo contable del banco y se cuadra
+  con el ya importado: si la diferencia es constante (el historial importado no empezaba en
+  el saldo real) se acepta con un aviso y desde entonces manda el banco; si varía, faltan o
+  sobran movimientos y no se importa nada.
+- **Renovar la autorización**: caduca (Santander ~180 días, TR ~90). `pos sync` avisa 14
+  días antes. Se renueva repitiendo la autorización en Enable Banking (enlace del banco →
+  `code` → `POST /sessions`) y sustituyendo esa sesión en `sessions.json`.
+
 ## Inversiones y patrimonio
 
 ```bash

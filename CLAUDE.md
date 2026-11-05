@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007 y 0008 (inversiones).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones) y 0010 (open banking).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -92,6 +92,11 @@ Reglas impuestas por `lint-imports`:
   revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
 - Cierre mensual: skill `.claude/skills/monthly-close/` + `finance/close.py` (solo lectura);
   bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
+- Open banking (ADR 0010): cliente HTTP `adapters/enablebanking.py` (solo lectura), parser
+  puro `finance/importers/enablebanking.py`, orquestación `bootstrap.bank_sync` (en `pos sync`,
+  máx. una consulta cada 5 h por el cupo PSD2). Ids provisionales `prov:` (TR no da id): los
+  sustituye un id real posterior. Para inspeccionar respuestas reales, solo estructura
+  enmascarada; cada consulta gasta cupo del banco.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = único valor de mercado; nunca precios de red.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`

@@ -18,6 +18,10 @@ class StatementError(Exception):
     pass
 
 
+# Prefijo de los ids que no vienen del banco (open banking sin `entry_reference`).
+PROVISIONAL = "prov:"
+
+
 @dataclass(frozen=True)
 class ParsedTransaction:
     booking_date: str  # YYYY-MM-DD
@@ -42,6 +46,9 @@ class ParsedStatement:
     # Movimientos con `external_id`: si en la cuenta hay uno sin id con el mismo importe a
     # ±`adopt_days` días (importado de otra fuente), se enlaza en vez de duplicarlo.
     adopt_days: int = 0
+    # Movimientos con id provisional (`prov:…`, open banking sin id del banco): si ya hay
+    # uno con el mismo importe a ±N días (de cualquier fuente), es el mismo y no se duplica.
+    match_existing_days: int = 0
 
     @property
     def external_ref(self) -> str:
