@@ -150,10 +150,17 @@ def test_inbox_missing_folder_does_not_break_sync(app, inbox):
 
 
 def test_inbox_cli(app, inbox):
-    (inbox / "transactions.xls").write_bytes(fake.build(fake.SEPTEMBER))
-    out = CliRunner().invoke(cli, ["finance", "inbox"])
+    import os
+    import time
+
+    f = inbox / "transactions.xls"
+    f.write_bytes(fake.build(fake.SEPTEMBER))
+    out = CliRunner().invoke(cli, ["finance", "inbox"])  # recién subido: importa, no mueve
     assert out.exit_code == 0, out.output
-    assert "8 nuevos" in out.output and "importados/2026-09" in out.output
+    assert "8 nuevos" in out.output and "próxima sync" in out.output and f.exists()
+    os.utime(f, (time.time() - 3600, time.time() - 3600))
+    out = CliRunner().invoke(cli, ["finance", "inbox"])
+    assert "ya estaba importado" in out.output and "importados/2026-09" in out.output
     assert "La bandeja está vacía" in CliRunner().invoke(cli, ["finance", "inbox"]).output
 
 

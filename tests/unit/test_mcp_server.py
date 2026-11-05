@@ -18,13 +18,15 @@ def device(tmp_path):
 
 
 @pytest.fixture
-def server(device):
+def server(device, clock):
     path = write_config_template()
     path.write_text(f'timezone = "Atlantic/Canary"\n[apple]\nmailbox_dir = "{device.mailbox}"\n')
     apps: list[bootstrap.App] = []
 
     def open_app():
-        app = bootstrap.open_app()
+        app = bootstrap.open_app(
+            clock=clock
+        )  # reloj fijo: el resultado no depende de la fecha real
         apps.append(app)
         return app
 

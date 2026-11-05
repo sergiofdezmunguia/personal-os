@@ -94,6 +94,9 @@ Reglas impuestas por `lint-imports`:
   bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = único valor de mercado; nunca precios de red.
+- Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
+  (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.
+  Para revisar su diseño, renderízalo con datos inventados, nunca con los reales.
 - **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`, `tests/trade_republic_activity_fake.py`). Nunca leer extractos
   reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 

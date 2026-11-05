@@ -18,6 +18,7 @@ from personal_os.finance.models import FinanceError, ImportResult
 
 SUFFIXES = {".xls", ".xlsx", ".pdf", ".csv"}
 ARCHIVE = "importados"
+SETTLE_SECONDS = 600  # no mover lo que iCloud puede estar aún subiendo (lo devolvería a su sitio)
 
 
 @dataclass
@@ -26,6 +27,7 @@ class InboxItem:
     result: ImportResult | None = None
     error: str | None = None
     archived_to: str | None = None  # ruta relativa a la bandeja
+    deferred: bool = False  # importado, pero se archiva en la próxima pasada (fichero reciente)
 
 
 @dataclass
@@ -68,9 +70,15 @@ def _archive(inbox: Path, src: Path, month: str) -> Path:
     return dest
 
 
-def process_inbox(svc, ctx: ChangeContext, inbox: Path, *, today: str) -> InboxReport:
+def process_inbox(
+    svc, ctx: ChangeContext, inbox: Path, *, today: str, now: float | None = None
+) -> InboxReport:
     """Importa todo lo pendiente de la bandeja. `today` (YYYY-MM-DD) solo se usa para archivar
-    lo que no tiene movimientos."""
+    lo que no tiene movimientos.
+
+    Con `now` (segundos epoch), un fichero modificado hace menos de `SETTLE_SECONDS` se importa
+    pero no se mueve: si iCloud aún lo está sincronizando, deshace el movimiento y lo devuelve
+    a la bandeja. Se archiva en la siguiente pasada (ya importado, no se duplica)."""
     report = InboxReport()
     for path in pending_files(inbox):
         item = InboxItem(file_name=path.name)
@@ -92,6 +100,12 @@ def process_inbox(svc, ctx: ChangeContext, inbox: Path, *, today: str) -> InboxR
             item.error = f"No se pudo leer: {exc}"
             continue
         month = (statement.period[1] or today)[:7]
+        try:
+            if now is not None and 0 <= now - path.stat().st_mtime < SETTLE_SECONDS:
+                item.deferred = True
+                continue
+        except OSError:
+            pass
         try:
             item.archived_to = str(_archive(inbox, path, month).relative_to(inbox))
         except OSError as exc:

@@ -80,12 +80,16 @@ def bridge_install() -> None:
         'const LIST_NAME = "Personal OS";',
         f"const LIST_NAME = {json.dumps(cfg.apple.reminders_list)};",
     ).replace('const MAILBOX = "personal-os";', f"const MAILBOX = {json.dumps(mailbox.name)};")
-    target = scriptable_dir / wiring.BRIDGE_SCRIPT_NAME
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(source, encoding="utf-8")
-    shutil.move(tmp, target)
+    viewer = wiring.PANEL_VIEWER_SOURCE.read_text(encoding="utf-8").replace(
+        'const MAILBOX = "personal-os";', f"const MAILBOX = {json.dumps(mailbox.name)};"
+    )
+    for name, text in ((wiring.BRIDGE_SCRIPT_NAME, source), (wiring.PANEL_VIEWER_NAME, viewer)):
+        target = scriptable_dir / name
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        shutil.move(tmp, target)
+        typer.echo(f"Instalado: {target}")
     wiring.reminders_gateway(cfg).ensure_dirs()
-    typer.echo(f"Instalado: {target}")
 
 
 @bridge_app.command("status")
@@ -202,15 +206,46 @@ def sync_run(
         typer.echo(f"[backup] copia cifrada fuera: {outcome.offsite.path.name}")
     for w in outcome.backup_warnings:
         typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+    panel_line = _refresh_panel(application) if only in (None, "finance") else None
     if as_json:
         _echo_json(reports)
         return
     for r in reports:
         _print_report(r)
+    if panel_line:
+        typer.echo(panel_line)
     if any(r.stats.get("commands_sent") for r in reports):
         typer.echo(
             "  Los cambios llegarán a Recordatorios en la próxima ejecución del bridge en el iPhone."
         )
+
+
+def _refresh_panel(application) -> str | None:
+    """Regenera el panel tras la sync. Nunca la hace fallar: si algo va mal, avisa."""
+    from personal_os.ops import panel
+
+    try:
+        result = panel.generate(application)
+    except Exception as exc:  # el panel es un extra: la sync ya terminó bien
+        return f"[panel] aviso: no se pudo generar ({exc})"
+    return f"[panel] {result.path.name} actualizado ({result.size // 1024} KiB)"
+
+
+@app.command("panel")
+def panel_cmd(
+    no_open: bool = typer.Option(False, "--no-open", help="Solo genera; no abre el navegador"),
+) -> None:
+    """Genera el panel «Pulso del mes» y lo abre en el navegador (en el iPhone: Scriptable)."""
+    from personal_os.ops import panel
+
+    application = wiring.open_app()
+    try:
+        result = panel.generate(application)
+    finally:
+        application.db.close()
+    typer.echo(f"✓ Panel: {result.path}")
+    if not no_open and not panel.open_in_browser(result.path):
+        typer.echo("  Ábrelo en el navegador con la ruta de arriba.")
 
 
 @sync_app.command("status")

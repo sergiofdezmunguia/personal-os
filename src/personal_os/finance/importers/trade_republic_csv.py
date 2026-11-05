@@ -105,7 +105,7 @@ def parse(data: bytes) -> ParsedActivity:
     for when, day, amount, fee, tax, row in parsed:
         balance += amount + fee + tax
         prefix = PREFIXES.get(row["type"], row["type"].replace("_", " ").capitalize())
-        desc = mask_identifiers(" ".join(row["description"].split()))
+        desc = mask_identifiers(_clean(row["description"]))
         txs.append(
             ParsedTransaction(
                 booking_date=day,
@@ -158,6 +158,13 @@ def _trade(kind, when, day, amount, fee, tax, row) -> ParsedTrade:
         tax_cents=tax,
         savings_plan=row["description"].lower().startswith(SAVINGS_PLAN_MARK),
     )
+
+
+def _clean(text: str) -> str:
+    """Espacios colapsados y sin el «null» que TR pega al final de algunas descripciones
+    (p. ej. «Comercio Ficticionull» en las compras de finales de 2025)."""
+    text = " ".join(text.split())
+    return text[:-4].rstrip() if text.endswith("null") and len(text) > 4 else text
 
 
 def _cents(text: str) -> int:

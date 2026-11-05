@@ -29,6 +29,8 @@ BRIDGE_SOURCE = (
     Path(__file__).resolve().parents[2] / "bridge" / "scriptable" / "personal-os-sync.js"
 )
 BRIDGE_SCRIPT_NAME = "Personal OS Sync.js"
+PANEL_VIEWER_SOURCE = BRIDGE_SOURCE.with_name("personal-os-panel.js")
+PANEL_VIEWER_NAME = "Personal OS Panel.js"  # abre el panel en el iPhone (visor con JavaScript)
 
 
 @dataclass
@@ -98,7 +100,11 @@ def finance_inbox(application: App):
         raise ConfigError(f"[finance].inbox_dir no existe o no es accesible: {inbox}")
     today = application.clock.now().astimezone(ZoneInfo(application.config.timezone)).date()
     return process_inbox(
-        finance_service(application), ChangeContext.system(), inbox, today=today.isoformat()
+        finance_service(application),
+        ChangeContext.system(),
+        inbox,
+        today=today.isoformat(),
+        now=application.clock.now().timestamp(),
     )
 
 
