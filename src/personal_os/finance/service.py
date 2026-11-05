@@ -13,12 +13,14 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable
+from datetime import date
 
 from personal_os.core.clock import Clock, to_iso
 from personal_os.core.db import Database
 from personal_os.core.events import ChangeContext, EventLog
 from personal_os.core.ids import new_id
-from personal_os.finance.importers import ParsedStatement
+from personal_os.finance.importers import PROVISIONAL, ParsedStatement
+from personal_os.finance.importers import mask_identifiers as mask_merchant
 from personal_os.finance.models import (
     Account,
     Category,
@@ -32,6 +34,7 @@ from personal_os.finance.models import (
 )
 
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+SAME_MOVEMENT_DAYS = 7  # margen al reconocer un movimiento con otra fecha de operación
 
 
 def normalize(text: str) -> str:
@@ -42,6 +45,8 @@ def normalize(text: str) -> str:
 
 
 def _fingerprint(account_id: str, tx, n: int) -> str:
+    if tx.external_id:  # el banco da un id estable: basta con él
+        return hashlib.sha256(f"{account_id}|ext|{tx.external_id}".encode()).hexdigest()
     key = "|".join(
         str(x)
         for x in (
@@ -55,6 +60,25 @@ def _fingerprint(account_id: str, tx, n: int) -> str:
         )
     )
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _eod_offset(existing: dict, incoming: dict, days: list[str]) -> int:
+    """Diferencia de saldo al cierre (banco − importado) en los días comunes.
+
+    Una diferencia constante significa que los movimientos casan y solo el punto de partida
+    del saldo importado era otro (p. ej. un historial que no empieza en 0): se acepta y se
+    devuelve. Si con 5 o más días menos del 80 % comparten la misma diferencia, faltan o
+    sobran movimientos y se rechaza."""
+    diffs = [incoming[d] - existing[d] for d in days]
+    if not diffs:
+        return 0
+    offset, hits = Counter(diffs).most_common(1)[0]
+    if len(diffs) >= 5 and hits / len(diffs) < 0.8:
+        raise FinanceError(
+            f"El saldo que da el banco no cuadra con lo ya importado ({hits} de {len(diffs)}"
+            " días con la misma diferencia); no se importa nada."
+        )
+    return offset if hits == len(diffs) or len(diffs) >= 5 else 0
 
 
 def rule_matches(rule: Rule, description: str, amount_cents: int) -> bool:
@@ -116,6 +140,7 @@ class FinanceService:
         account_id: str | None = None,
         category: str | None = None,
         uncategorized: bool = False,
+        by_claude: bool = False,
         search: str | None = None,
         limit: int | None = 200,
     ) -> list[Transaction]:
@@ -134,6 +159,8 @@ class FinanceService:
             params += [category, category]
         if uncategorized:
             where.append("category IS NULL")
+        if by_claude:
+            where.append("category_source = 'manual' AND categorized_by = 'mcp'")
         sql = "SELECT * FROM fin_transactions"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -172,12 +199,24 @@ class FinanceService:
     # ---------------------------------------------------------------- importar
 
     def import_statement(
-        self, ctx: ChangeContext, statement: ParsedStatement, *, file_name: str, file_sha256: str
+        self,
+        ctx: ChangeContext,
+        statement: ParsedStatement,
+        *,
+        file_name: str,
+        file_sha256: str,
+        account_id: str | None = None,
     ) -> ImportResult:
+        """Importa un extracto. `account_id` fuerza la cuenta (ficheros sin IBAN, como el CSV
+        de Trade Republic); si no, se busca o crea por entidad + IBAN."""
         now = self._now()
         warnings = list(statement.warnings)
         with self.db.transaction():
-            account = self._ensure_account(ctx, statement, now)
+            if account_id is not None:
+                account = self.get_account(account_id)
+            else:
+                account = self._ensure_account(ctx, statement, now)
+            self._check_superseded_source(account, statement)
             seen = self.db.one(
                 "SELECT id FROM fin_imports WHERE account_id = ? AND file_sha256 = ?",
                 (account.id, file_sha256),
@@ -220,7 +259,20 @@ class FinanceService:
             )
             counts: Counter = Counter()
             new_ids = []
+            linked, relabeled = self._link_existing(account.id, statement, now)
+            already, offset = self._match_provisional(account.id, statement, linked)
+            if offset:
+                warnings.append(
+                    f"El saldo de lo importado antes difiere del que da el banco en "
+                    f"{offset / 100:+.2f} € (constante: faltaba algo al principio del "
+                    "historial). Desde hoy manda el saldo del banco."
+                )
+            claimed: set[str] = set()
             for tx in statement.transactions:
+                if tx.external_id in linked or tx.external_id in already:
+                    continue
+                if not tx.external_id and self._same_movement(account.id, tx, claimed):
+                    continue
                 ident = (
                     tx.booking_date,
                     tx.value_date,
@@ -234,8 +286,8 @@ class FinanceService:
                 cur = self.db.execute(
                     "INSERT OR IGNORE INTO fin_transactions(id, account_id, import_id,"
                     " booking_date, value_date, description, amount_cents, currency,"
-                    " balance_after_cents, fingerprint, created_at, updated_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " balance_after_cents, fingerprint, external_id, created_at, updated_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         txn_id,
                         account.id,
@@ -247,18 +299,19 @@ class FinanceService:
                         statement.currency,
                         tx.balance_after_cents,
                         _fingerprint(account.id, tx, n),
+                        tx.external_id,
                         now,
                         now,
                     ),
                 )
                 if cur.rowcount:
                     new_ids.append(txn_id)
-            duplicates = len(statement.transactions) - len(new_ids)
+            duplicates = len(statement.transactions) - len(new_ids) - len(linked)
             self.db.execute(
                 "UPDATE fin_imports SET rows_new = ?, rows_duplicate = ? WHERE id = ?",
                 (len(new_ids), duplicates, import_id),
             )
-            categorized = self._apply_rules(ctx, new_ids)
+            categorized = self._apply_rules(ctx, new_ids + relabeled)
             self.events.record(
                 ctx,
                 "finance.import.completed",
@@ -269,6 +322,7 @@ class FinanceService:
                     "source": statement.source,
                     "rows_new": len(new_ids),
                     "rows_duplicate": duplicates,
+                    "rows_linked": len(linked),
                     "categorized": categorized,
                     "period": [period_from, period_to],
                 },
@@ -282,7 +336,217 @@ class FinanceService:
             categorized=categorized,
             already_imported=False,
             warnings=warnings,
+            rows_linked=len(linked),
         )
+
+    def _same_movement(self, account_id: str, tx, claimed: set[str]) -> bool:
+        """¿Ya está este movimiento con otra fecha de operación? Algunos bancos la cambian
+        entre formatos de exportación (Santander, compras con tarjeta) pero no la fecha valor,
+        el importe, el saldo ni el concepto. Solo se busca si la huella exacta no existe."""
+        if tx.value_date is None or tx.balance_after_cents is None:
+            return False
+        exact = self.db.one(
+            "SELECT 1 FROM fin_transactions WHERE account_id = ? AND booking_date = ?"
+            " AND value_date = ? AND amount_cents = ? AND balance_after_cents = ?",
+            (account_id, tx.booking_date, tx.value_date, tx.amount_cents, tx.balance_after_cents),
+        )
+        if exact is not None:
+            return False  # la huella decide (incluido el ordinal entre idénticos)
+        day = date.fromisoformat(tx.booking_date)
+        for r in self.db.all(
+            "SELECT id, booking_date, description FROM fin_transactions WHERE account_id = ?"
+            " AND value_date = ? AND amount_cents = ? AND balance_after_cents = ?",
+            (account_id, tx.value_date, tx.amount_cents, tx.balance_after_cents),
+        ):
+            if r["id"] in claimed:
+                continue
+            near = abs((date.fromisoformat(r["booking_date"]) - day).days) <= SAME_MOVEMENT_DAYS
+            if near and normalize(r["description"]) == normalize(tx.description):
+                claimed.add(r["id"])
+                return True
+        return False
+
+    def _check_superseded_source(self, account: Account, st: ParsedStatement) -> None:
+        """Una entidad que ya se importa con ids del banco (CSV de TR) no admite el PDF de
+        cuenta: sus movimientos no traen id y se duplicarían."""
+        if st.transactions and any(t.external_id for t in st.transactions):
+            return
+        has_ids = self.db.one(
+            "SELECT 1 FROM fin_transactions t JOIN fin_accounts a ON a.id = t.account_id"
+            " WHERE a.institution = ? AND t.external_id IS NOT NULL LIMIT 1",
+            (account.institution,),
+        )
+        if has_ids:
+            raise FinanceError(
+                f"{account.label} ya se importa desde la exportación CSV (con id por "
+                "movimiento); este extracto no hace falta. Usa la exportación CSV más reciente."
+            )
+
+    def _link_existing(
+        self, account_id: str, st: ParsedStatement, now: str
+    ) -> tuple[set[str], list[str]]:
+        """Movimientos con id del banco que ya estaban importados de otra fuente (sin id):
+        mismo importe y fecha a ±`adopt_days`. Se les pone el id y conservan categoría,
+        descripción y saldo; salvo los provisionales de open banking, que toman el concepto
+        del fichero (TR no lo da por open banking). Devuelve los ids enlazados y los
+        movimientos cuyo concepto ha cambiado.
+
+        Antes de enlazar se contrasta el saldo al cierre de los días comunes: si el fichero
+        no cuadra con lo importado (p. ej. una exportación parcial), se rechaza."""
+        incoming = [t for t in st.transactions if t.external_id]
+        if not incoming:
+            return set(), []
+        known = {
+            r["external_id"]
+            for r in self.db.all(
+                "SELECT external_id FROM fin_transactions"
+                " WHERE account_id = ? AND external_id IS NOT NULL",
+                (account_id,),
+            )
+        }
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents, balance_after_cents, external_id"
+            " FROM fin_transactions WHERE account_id = ? ORDER BY booking_date, rowid",
+            (account_id,),
+        )
+        existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
+        free: dict[int, list] = {}
+        for r in rows:
+            if r["external_id"] is None or r["external_id"].startswith(PROVISIONAL):
+                free.setdefault(r["amount_cents"], []).append(r)
+
+        pending = [t for t in incoming if t.external_id not in known]
+        matches: dict[str, str] = {}  # external_id → txn id
+        relabel: dict[str, str] = {}  # txn id → concepto del fichero
+        used: set[str] = set()
+        for tolerance in range(st.adopt_days + 1):
+            for tx in pending:
+                if tx.external_id in matches:
+                    continue
+                day = date.fromisoformat(tx.booking_date)
+                for r in free.get(tx.amount_cents, []):
+                    if r["id"] in used:
+                        continue
+                    # Un id provisional solo adopta movimientos sin id; uno real, también
+                    # los provisionales (el CSV de TR sustituye a lo llegado por open banking).
+                    if r["external_id"] and tx.external_id.startswith(PROVISIONAL):
+                        continue
+                    if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
+                        matches[tx.external_id] = r["id"]
+                        used.add(r["id"])
+                        if r["external_id"] and not tx.external_id.startswith(PROVISIONAL):
+                            relabel[r["id"]] = tx.description
+                        break
+
+        # Saldo al cierre de cada día según el fichero frente al ya importado. Los ids
+        # provisionales ya conocidos no cuentan: su saldo lo puso una consulta anterior de open
+        # banking y los días antiguos pueden mezclar fuentes (el desfase constante lo trata
+        # `_match_provisional`).
+        incoming_eod = {t.booking_date: t.balance_after_cents for t in incoming}
+        common = [
+            d
+            for d in {
+                t.booking_date
+                for t in incoming
+                if t.external_id in matches
+                or (t.external_id in known and not t.external_id.startswith(PROVISIONAL))
+            }
+            if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
+        ]
+        if len(common) >= 5:
+            agree = sum(existing_eod[d] == incoming_eod[d] for d in common)
+            if agree / len(common) < 0.8:
+                raise FinanceError(
+                    f"El saldo del fichero no cuadra con lo ya importado ({agree} de "
+                    f"{len(common)} días coinciden). ¿Es una exportación parcial? Exporta el "
+                    "historial completo."
+                )
+        for ext, txn_id in matches.items():
+            self.db.execute(
+                "UPDATE fin_transactions SET external_id = ?, updated_at = ? WHERE id = ?",
+                (ext, now, txn_id),
+            )
+        for txn_id, description in relabel.items():
+            self.db.execute(
+                "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                (description, now, txn_id),
+            )
+        return set(matches), list(relabel)
+
+    def _match_provisional(
+        self, account_id: str, st: ParsedStatement, linked: set[str]
+    ) -> set[str]:
+        """Movimientos con id provisional que ya están en la cuenta (de otra fuente o de una
+        consulta anterior en la que el día no cabía entero): mismo importe a
+        ±`match_existing_days`, emparejando primero por el mismo día. No se tocan.
+
+        Devuelve también la diferencia constante de saldo con lo importado (ver `_eod_offset`).
+        """
+        incoming = [
+            t
+            for t in st.transactions
+            if t.external_id
+            and t.external_id.startswith(PROVISIONAL)
+            and t.external_id not in linked
+        ]
+        if not incoming or st.match_existing_days <= 0:
+            return set(), 0
+        known = {
+            r["external_id"]
+            for r in self.db.all(
+                "SELECT external_id FROM fin_transactions"
+                " WHERE account_id = ? AND external_id LIKE ?",
+                (account_id, PROVISIONAL + "%"),
+            )
+        }
+        pending = [t for t in incoming if t.external_id not in known]
+        if not pending:
+            return set(), 0
+        first = min(t.booking_date for t in pending)
+        lo = date.fromordinal(date.fromisoformat(first).toordinal() - st.match_existing_days)
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents, balance_after_cents FROM fin_transactions"
+            " WHERE account_id = ? AND booking_date >= ? ORDER BY booking_date, rowid",
+            (account_id, lo.isoformat()),
+        )
+        # Lo ya reclamado por un id conocido de esta consulta no puede emparejarse otra vez.
+        taken = {
+            r["id"]
+            for r in self.db.all(
+                "SELECT id, external_id FROM fin_transactions WHERE account_id = ?"
+                " AND external_id LIKE ?",
+                (account_id, PROVISIONAL + "%"),
+            )
+            if r["external_id"] in {t.external_id for t in incoming}
+        }
+        by_amount: dict[int, list] = {}
+        for r in rows:
+            if r["id"] not in taken:
+                by_amount.setdefault(r["amount_cents"], []).append(r)
+        matched: dict[str, dict] = {}
+        used: set[str] = set()
+        for tolerance in range(st.match_existing_days + 1):
+            for tx in pending:
+                if tx.external_id in matched:
+                    continue
+                day = date.fromisoformat(tx.booking_date)
+                for r in by_amount.get(tx.amount_cents, []):
+                    if r["id"] in used:
+                        continue
+                    if abs((date.fromisoformat(r["booking_date"]) - day).days) == tolerance:
+                        matched[tx.external_id] = r
+                        used.add(r["id"])
+                        break
+
+        existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
+        incoming_eod = {t.booking_date: t.balance_after_cents for t in st.transactions}
+        common = [
+            d
+            for d in {t.booking_date for t in pending if t.external_id in matched}
+            if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
+        ]
+        offset = _eod_offset(existing_eod, incoming_eod, common)
+        return set(matched), offset
 
     def _ensure_account(self, ctx: ChangeContext, st: ParsedStatement, now: str) -> Account:
         row = self.db.one(
@@ -381,15 +645,28 @@ class FinanceService:
             return self._apply_rules(ctx, None)
 
     def set_category(self, ctx: ChangeContext, txn_ref: str, slug: str | None) -> Transaction:
-        """Categoría manual (gana siempre a las reglas). `None` la quita y deja actuar a las reglas."""
+        """Categoría manual (gana siempre a las reglas). `None` la quita y deja actuar a las reglas.
+
+        Desde el MCP (Claude) solo se categoriza lo que el usuario no ha puesto a mano; queda
+        marcado (`categorized_by = 'mcp'`) para poder revisarlo."""
         txn = self.get_transaction(txn_ref)
         if slug is not None:
             self.get_category(slug)
+        if ctx.actor == "mcp" and txn.category_source == "manual" and not txn.by_claude:
+            raise FinanceError(
+                f"{txn.id} lo categorizó el usuario a mano ({txn.category}); Claude no lo cambia"
+            )
         with self.db.transaction():
             self.db.execute(
                 "UPDATE fin_transactions SET category = ?, category_source = ?, rule_id = NULL,"
-                " updated_at = ? WHERE id = ?",
-                (slug, "manual" if slug else None, self._now(), txn.id),
+                " categorized_by = ?, updated_at = ? WHERE id = ?",
+                (
+                    slug,
+                    "manual" if slug else None,
+                    ctx.actor if slug else None,
+                    self._now(),
+                    txn.id,
+                ),
             )
             self.events.record(
                 ctx,
@@ -401,6 +678,110 @@ class FinanceService:
             if slug is None:
                 self._apply_rules(ctx, [txn.id])
         return self.get_transaction(txn.id)
+
+    def enrich_from_card_payments(
+        self,
+        ctx: ChangeContext,
+        payments: Iterable,
+        *,
+        placeholders: Iterable[str],
+        tz,
+        max_days: int = 3,
+    ) -> int:
+        """Pone el comercio a los movimientos que llegaron sin concepto (open banking de TR)
+        cruzándolos con los pagos de Apple Pay: mismo importe y fecha contable entre el día
+        del pago y `max_days` después (primero el más cercano). Determinista e idempotente:
+        un movimiento ya enriquecido deja de ser un hueco. Después aplica las reglas."""
+        holes = tuple(placeholders)
+        if not holes:
+            return 0
+        rows = self.db.all(
+            "SELECT id, booking_date, amount_cents FROM fin_transactions"
+            f" WHERE description IN ({','.join('?' * len(holes))})"
+            " ORDER BY booking_date, rowid",
+            holes,
+        )
+        by_amount: dict[int, list] = {}
+        for r in rows:
+            by_amount.setdefault(r["amount_cents"], []).append(r)
+        used: set[str] = set()
+        changed: list[tuple[str, str]] = []
+        for p in sorted(payments, key=lambda p: p.at):
+            day = p.at.astimezone(tz).date()
+            if self._payment_consumed(p, day, max_days, used):
+                continue
+            best = None
+            for r in by_amount.get(-p.amount_cents, []):
+                if r["id"] in used:
+                    continue
+                lag = (date.fromisoformat(r["booking_date"]) - day).days
+                if 0 <= lag <= max_days and (best is None or lag < best[0]):
+                    best = (lag, r)
+            if best is not None:
+                used.add(best[1]["id"])
+                changed.append((best[1]["id"], p.merchant))
+        if not changed:
+            return 0
+        now = self._now()
+        with self.db.transaction():
+            for txn_id, merchant in changed:
+                self.db.execute(
+                    "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                    (mask_merchant(merchant), now, txn_id),
+                )
+            self.events.record(
+                ctx,
+                "finance.transactions.enriched",
+                "fin_transaction",
+                "*",
+                {"source": "applepay", "count": len(changed)},
+            )
+            self._apply_rules(ctx, [t for t, _ in changed])
+        return len(changed)
+
+    def name_placeholder(
+        self, ctx: ChangeContext, txn_id: str, merchant: str, *, placeholders: Iterable[str]
+    ) -> str:
+        """Pone el comercio a un movimiento que el banco dejó sin concepto (p. ej. una compra
+        online cuyo recibo está en el correo). Solo sobre esos: nunca pisa un concepto real.
+        Devuelve la descripción nueva y aplica las reglas."""
+        row = self.db.one("SELECT description FROM fin_transactions WHERE id = ?", (txn_id,))
+        if row is None:
+            raise NotFound(f"No existe el movimiento {txn_id}")
+        if row["description"] not in set(placeholders):
+            raise FinanceError(
+                f"{txn_id} ya tiene concepto del banco; solo se nombran los que no lo tienen"
+            )
+        name = mask_merchant(" ".join(merchant.split()))[:80]
+        if not name:
+            raise FinanceError("Falta el nombre del comercio")
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                (name, self._now(), txn_id),
+            )
+            self.events.record(
+                ctx, "finance.transactions.enriched", "fin_transaction", txn_id,
+                {"source": ctx.actor, "count": 1},
+            )  # fmt: skip
+            self._apply_rules(ctx, [txn_id])
+        return name
+
+    def _payment_consumed(self, p, day: date, max_days: int, used: set[str]) -> bool:
+        """¿Este pago ya puso su comercio en un movimiento (pasada anterior)? Mismo importe,
+        misma ventana y la descripción es ese comercio. Ese movimiento queda reservado."""
+        last = date.fromordinal(day.toordinal() + max_days)
+        for r in self.db.all(
+            "SELECT id, description FROM fin_transactions WHERE amount_cents = ?"
+            " AND booking_date BETWEEN ? AND ?",
+            (-p.amount_cents, day.isoformat(), last.isoformat()),
+        ):
+            if r["id"] not in used and normalize(r["description"]) == normalize(
+                mask_merchant(p.merchant)
+            ):
+                used.add(r["id"])
+                return True
+        return False
 
     # ---------------------------------------------------------------- reglas
 

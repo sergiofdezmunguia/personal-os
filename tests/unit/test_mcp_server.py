@@ -18,13 +18,15 @@ def device(tmp_path):
 
 
 @pytest.fixture
-def server(device):
+def server(device, clock):
     path = write_config_template()
     path.write_text(f'timezone = "Atlantic/Canary"\n[apple]\nmailbox_dir = "{device.mailbox}"\n')
     apps: list[bootstrap.App] = []
 
     def open_app():
-        app = bootstrap.open_app()
+        app = bootstrap.open_app(
+            clock=clock
+        )  # reloj fijo: el resultado no depende de la fecha real
         apps.append(app)
         return app
 
@@ -53,8 +55,15 @@ def test_exposes_minimal_toolset(server):
         "finance_summary",
         "list_category_rules",
         "propose_category_rule",
+        "categorize_transactions",
+        "finance_month_close",
+        "investments_overview",
+        "finance_recurring",
+        "name_unlabeled_transaction",
+        "satellite_overview",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
+    assert tools["investments_overview"].annotations.read_only_hint is True
 
 
 def test_create_list_complete_recurring_task(server):

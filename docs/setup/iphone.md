@@ -49,6 +49,16 @@ Apple, no se puede desactivar).
 Opcional: crea un **atajo** normal con la misma acción y añádelo a la pantalla de inicio
 como botón "Sincronizar".
 
+## 4b. iPhone — panel «Pulso del mes»
+
+`uv run pos bridge install` instala también el script **Personal OS Panel** en Scriptable.
+Ábrelo desde Scriptable (o crea en Atajos un atajo con la acción *Scriptable › Run Script ›
+Personal OS Panel*, con **Run In App** activado, y añádelo a la pantalla de inicio). El panel
+se actualiza en el PC con cada `pos sync`.
+
+Sin Scriptable también se ve desde **Archivos › iCloud Drive › Scriptable › personal-os ›
+panel › index.html**, pero sin tooltips (Archivos no ejecuta JavaScript).
+
 ## 5. Calendario (CalDAV)
 
 1. En la app **Calendario** › Calendarios › Añadir calendario (cuenta **iCloud**) ›
@@ -70,3 +80,21 @@ como botón "Sincronizar".
 POS_LIVE=1 uv run pytest -m live -v   # ciclo real crear/editar/borrar en iCloud Calendar
 uv run pos sync status
 ```
+
+
+## Atajo «Salud del día» (hábitos en el panel)
+
+Automatización personal → **Hora del día** 23:30, diaria, **Ejecutar inmediatamente**:
+
+1. **Buscar muestras de salud** · tipo *Pasos* · fecha de inicio *es hoy* → **Calcular
+   estadísticas** *Suma* → variable `Pasos`.
+2. Igual con *Minutos de ejercicio* → `Ejercicio`; *Energía alimentaria* (la escribe Fitia)
+   → `Kcal`.
+3. **Buscar muestras de salud** · tipo *Análisis del sueño* · fecha de inicio *en las últimas
+   24 horas* · valor *Dormido* (o *Núcleo/Profundo/REM*) → **Obtener detalles** *Duración* →
+   **Calcular estadísticas** *Suma* → **Calcular** ÷ 3600 → `Sueño` (horas).
+4. **Texto**: `Fecha actual (formato aaaa-MM-dd); pasos=Pasos; ejercicio=Ejercicio; sueño=Sueño; kcal=Kcal`
+5. **Añadir a archivo de texto** → iCloud Drive › PersonalOS-extractos › salud › `salud.txt`
+   (crear la carpeta la primera vez), *nueva línea* activado.
+
+El panel (pestaña Hábitos y «Ayer en Salud» en Hoy) lo lee en la siguiente sincronización.

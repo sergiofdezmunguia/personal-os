@@ -66,7 +66,7 @@ layers = [
     "personal_os.bootstrap",
     "personal_os.adapters",
     "personal_os.sync",
-    "personal_os.tasks | personal_os.calendar | personal_os.finance",
+    "personal_os.tasks | personal_os.calendar | personal_os.finance | personal_os.habits",
     "personal_os.core",
 ]
 
@@ -74,4 +74,6 @@ layers = [
 name = "Los adaptadores no conocen el dominio (solo los ports/DTOs de sync)"
 type = "forbidden"
 source_modules = ["personal_os.adapters"]
-forbidden_modules = ["personal_os.tasks", "personal_os.calendar", "personal_os.finance"]
+forbidden_modules = [
+    "personal_os.tasks", "personal_os.calendar", "personal_os.finance", "personal_os.habits",
+]

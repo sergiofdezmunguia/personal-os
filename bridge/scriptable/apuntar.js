@@ -1,0 +1,526 @@
+// Variables used by Scriptable.
+// These must be at the top of the file. Do not edit.
+// icon-color: red; icon-glyph: calendar-plus;
+// Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
+// del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
+// Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 11 (también cancela, mueve y crea recordatorios por voz).
+
+const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
+
+// Categoría: emoji, palabras clave (sin tildes), duración en minutos (0 = todo el día).
+const CATEGORIES = [
+  ["🩺", ["medico", "medica", "doctor", "doctora", "dentista", "fisio", "analisis", "hospital",
+    "centro de salud", "consulta", "revision", "oculista", "psicolog", "vacuna", "urgencias"], 60],
+  ["✈️", ["vuelo", "avion", "aeropuerto", "embarque"], 120],
+  ["🚆", ["tren", "ave ", "renfe", "autobus", "guagua", "ferry", "barco"], 120],
+  ["🎬", ["cine", "pelicula"], 150],
+  ["🎵", ["concierto", "festival", "fiesta", "discoteca", "teatro", "musical"], 180],
+  ["🍽️", ["comida", "comer", "cena", "cenar", "almuerzo", "desayuno", "brunch", "restaurante"], 120],
+  ["🍻", ["quedada", "quedar", "copas", "cerveza", "tomar algo", "afterwork"], 120],
+  ["🏋️", ["gym", "gimnasio", "entreno", "entrenar", "padel", "partido", "futbol", "baloncesto",
+    "basket", "correr", "yoga", "crossfit", "piscina"], 90],
+  ["💼", ["reunion", "trabajo", "oficina", "entrevista", "call", "llamada", "cliente"], 60],
+  ["🎓", ["clase", "master", "bootcamp", "examen", "curso", "tutoria", "ingles"], 60],
+  ["🎂", ["cumple", "aniversario", "boda", "bautizo"], 0],
+  ["🎉", ["festivo", "vacaciones", "puente", "dia libre", "libre"], 0],
+  ["💈", ["peluqueria", "barberia", "corte de pelo", "unas", "manicura"], 60],
+  ["📌", ["banco", "notaria", "itv", "dni", "pasaporte", "hacienda", "ayuntamiento",
+    "cita previa", "gestoria", "seguro", "taller", "abogado"], 60],
+];
+const DEFAULT = ["📅", [], 60];
+
+const WEEKDAYS = { domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6 };
+const MONTHS = { enero: 0, febrero: 1, marzo: 2, abril: 3, mayo: 4, junio: 5, julio: 6,
+  agosto: 7, septiembre: 8, setiembre: 8, octubre: 9, noviembre: 10, diciembre: 11 };
+const NUMBERS = { una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7,
+  ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12 };
+
+const plain = (s) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+
+// Las tildes se quitan para buscar, conservando posiciones: cada letra con tilde es 1 carácter.
+function fold(s) {
+  return Array.from(s).map((c) => (plain(c) || c)[0]).join("");
+}
+
+function addDays(d, n) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+// Números dichos con palabras (el dictado de Siri a veces los deja así). «uno/una» solo en
+// «a la una»: si no, «tengo una cena» se leería como el día 1.
+const WORD_NUMBERS = ["", "", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve",
+  "diez", "once", "doce", "trece", "catorce", "quince", "dieciseis", "diecisiete", "dieciocho",
+  "diecinueve", "veinte", "veintiuno", "veintidos", "veintitres", "veinticuatro", "veinticinco",
+  "veintiseis", "veintisiete", "veintiocho", "veintinueve", "treinta"];
+
+// Limpia lo típico del dictado: «Oye Siri», «apuntar», números en palabras.
+function cleanDictation(text) {
+  let s = String(text || "").trim().replace(/\s+/g, " ");
+  s = s.replace(/^(oye|hey|ey)[ ,]+siri[ ,.:]*/i, "");
+  s = s.replace(/^(ap[uú]ntame|ap[uú]nta(r|me)?|pon(me)?|a[nñ]ade)[ ,.:]+/i, "");
+  const words = (w) => new RegExp(`\\b${w.split("").map((c) => ({ a: "[aá]", e: "[eé]", i: "[ií]", o: "[oó]", u: "[uú]" }[c] || c)).join("")}\\b`, "gi");
+  s = s.replace(/\btreinta y (uno|una)\b/gi, "31").replace(/\b(a la) (una|uno)\b/gi, "$1 1");
+  for (let n = WORD_NUMBERS.length - 1; n >= 2; n--) s = s.replace(words(WORD_NUMBERS[n]), String(n));
+  return s;
+}
+
+// Devuelve {title, emoji, start, end, allDay, warnings} o {error}.
+function parseEvent(text, now, opts = {}) {
+  const original = cleanDictation(text);
+  if (!original) return { error: "No has dicho nada." };
+  let t = fold(original); // misma longitud que original
+  const cut = []; // tramos a quitar del título
+  const take = (m) => { if (m) cut.push([m.index, m.index + m[0].length]); return m; };
+  const warnings = [];
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  // --- franja del día (antes que «mañana» = día siguiente)
+  let period = null;
+  let m = take(/\b(de|por) la (manana|tarde|noche)\b/.exec(t));
+  if (m) { period = m[2]; t = t.slice(0, m.index) + " ".repeat(m[0].length) + t.slice(m.index + m[0].length); }
+  let noon = take(/\b(a )?mediodia\b/.exec(t));
+
+  // --- día
+  let day = null;
+  if ((m = take(/\bpasado manana\b/.exec(t)))) day = addDays(today, 2);
+  else if ((m = take(/\bmanana\b/.exec(t)))) day = addDays(today, 1);
+  else if ((m = take(/\bhoy\b/.exec(t)))) day = today;
+
+  const wdRe = /\b(el |este |esta |el proximo |el que viene )?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)( que viene| proximo)?\b/;
+  const wd = take(wdRe.exec(t));
+  const weekday = wd ? WEEKDAYS[wd[2]] : null;
+
+  const numRe = /\b(el )?(dia )?(\d{1,2})(?:\/(\d{1,2})(?:\/(\d{2,4}))?| de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)(?: de (\d{4}))?)?\b(?! ?(?::|\.|h\b|horas?\b|y |menos |personas?\b|euros?\b|€|min))/;
+  // El número de día no puede ser la hora: se busca fuera de «a las …».
+  const masked = t
+    .replace(/\bde \d{1,2}(?:[:.]\d{2})? (?:a|hasta) (?:las? )?\d{1,2}(?:[:.]\d{2})?/g, (s) => " ".repeat(s.length))
+    .replace(/\ba (las?|eso de las?) [^ ]+( y (media|cuarto)| menos cuarto)?/g, (s) => " ".repeat(s.length));
+  const dn = numRe.exec(masked);
+  if (dn && !day) {
+    take(dn);
+    const n = parseInt(dn[3], 10);
+    let month = dn[4] ? parseInt(dn[4], 10) - 1 : dn[6] ? MONTHS[dn[6]] : null;
+    let year = dn[5] ? parseInt(dn[5].length === 2 ? "20" + dn[5] : dn[5], 10) : dn[7] ? parseInt(dn[7], 10) : null;
+    if (n < 1 || n > 31 || (month !== null && (month < 0 || month > 11))) return { error: "El día no es válido." };
+    if (month === null) {
+      // «el 24» / «martes 24»: el próximo mes (desde hoy) con ese día y, si se dijo, ese día de la semana.
+      for (let k = 0; k < (weekday === null ? 13 : 3) && !day; k++) {
+        const c = new Date(today.getFullYear(), today.getMonth() + k, n);
+        if (c.getDate() !== n || c < today) continue;
+        if (weekday === null || c.getDay() === weekday) day = c;
+      }
+      if (!day) return { error: `No encuentro un ${Object.keys(WEEKDAYS)[weekday]} ${n} próximo.` };
+    } else {
+      if (year === null) {
+        year = today.getFullYear();
+        if (new Date(year, month, n) < today) year += 1;
+      }
+      day = new Date(year, month, n);
+      if (day.getDate() !== n) return { error: "Esa fecha no existe." };
+      if (weekday !== null && day.getDay() !== weekday) warnings.push("El día de la semana no coincide con la fecha; uso la fecha.");
+    }
+  } else if (weekday !== null && !day) {
+    let diff = (weekday - today.getDay() + 7) % 7;
+    if (diff === 0) diff = 7;
+    day = addDays(today, diff);
+  }
+  if (!day) return { error: "No he entendido el día. Prueba con «el martes 24» o «mañana»." };
+
+  // --- hora
+  let hour = null, minute = 0;
+  const timeRe = /\b(?:a (?:las?|eso de las?) |sobre las? |de )?(\d{1,2}|una|uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)(?:(?::|\.|h)(\d{2})|( y media| y cuarto| menos cuarto))?(?: ?h(?:oras)?\b)?/g;
+  let tm;
+  const found = [];
+  while ((tm = timeRe.exec(t))) {
+    const lead = /^(a |sobre |de )/.test(tm[0]);
+    const explicit = tm[2] !== undefined || tm[3] !== undefined || lead;
+    if (!explicit) continue;
+    if (cut.some(([a, b]) => tm.index >= a && tm.index < b)) continue; // es el día
+    found.push(tm);
+  }
+  const toHM = (x) => {
+    let h = NUMBERS[x[1]] || parseInt(x[1], 10);
+    let mi = x[2] ? parseInt(x[2], 10) : 0;
+    if (x[3] === " y media") mi = 30;
+    else if (x[3] === " y cuarto") mi = 15;
+    else if (x[3] === " menos cuarto") { h -= 1; mi = 45; }
+    return [h, mi];
+  };
+  let endHM = null;
+  if (found.length) {
+    take(found[0]);
+    [hour, minute] = toHM(found[0]);
+    // «de 10 a 12», «hasta las 12»
+    const range = /^(?: a | hasta )(?:las? )?(\d{1,2})(?:(?::|\.)(\d{2}))?/.exec(t.slice(found[0].index + found[0][0].length));
+    if (range) {
+      endHM = [parseInt(range[1], 10), range[2] ? parseInt(range[2], 10) : 0];
+      cut.push([found[0].index + found[0][0].length, found[0].index + found[0][0].length + range[0].length]);
+    }
+  } else if (noon) { hour = 14; minute = 0; }
+  if (hour !== null) {
+    if (hour > 23 || minute > 59) return { error: "La hora no es válida." };
+    const pm = period === "tarde" || (period === "noche" && hour >= 5);
+    if (pm && hour < 12) hour += 12;
+    else if (!opts.hours24 && period === null && hour >= 1 && hour <= 7 && !/vuelo|avion|aeropuerto|tren|renfe|autobus|guagua|ferry/.test(plain(original))) {
+      hour += 12; // «a las 5» casi siempre es por la tarde
+      warnings.push("Entiendo que es por la tarde.");
+    }
+    if (endHM && endHM[0] < hour && endHM[0] + 12 <= 23) endHM[0] += 12;
+  }
+
+  // --- duración «durante 2 horas», «hora y media»
+  let duration = null;
+  const du = take(/\b(?:durante |por )?(\d+|una|dos|tres|cuatro) horas?( y media)?\b|\bhora y media\b/.exec(t));
+  if (du) duration = du[0].includes("hora y media") && !du[1] ? 90 : (NUMBERS[du[1]] || parseInt(du[1], 10)) * 60 + (du[2] ? 30 : 0);
+
+  // --- título: lo que queda, sin muletillas
+  cut.sort((a, b) => a[0] - b[0]);
+  let rest = "", pos = 0;
+  for (const [a, b] of cut) { if (a > pos) rest += original.slice(pos, a); pos = Math.max(pos, b); }
+  rest += original.slice(pos);
+  rest = rest.replace(/\s+/g, " ").trim();
+  const fillers = /^(oye |vale )?(tengo que ir al |tengo que ir a la |tengo que |tengo una? |tengo el |tengo la |tengo |tenia |tendre |tenemos |es |sera |apuntame |apunta |apuntar |ponme |pon |anade |recuerdame |hay |voy al |voy a la |voy a |me toca )+/i;
+  const fm = new RegExp(fillers.source, "i").exec(fold(rest));
+  if (fm) rest = rest.slice(fm[0].length);
+  let fr = fold(rest);
+  const lead = /^(?:(el|la|los|las|un|una|al|a|de|del|en)\b ?)+/.exec(fr);
+  if (lead) { rest = rest.slice(lead[0].length); fr = fold(rest); }
+  const tail = /(?: ?\b(el|la|los|las|a|de|del|en|y|para|que|dia|sobre|hasta|las?))+[ ,.]*$/.exec(fr);
+  if (tail) rest = rest.slice(0, tail.index);
+  rest = rest.replace(/[ ,.;:]+$/g, "").replace(/^[ ,.;:]+/, "").trim();
+  if (!rest) rest = "Evento";
+  rest = rest.charAt(0).toUpperCase() + rest.slice(1);
+
+  // --- categoría
+  const hay = " " + plain(original) + " ";
+  let cat = DEFAULT;
+  for (const c of CATEGORIES) if (c[1].some((k) => hay.includes(k))) { cat = c; break; }
+  const [emoji, , catMinutes] = cat;
+  const allDay = hour === null;
+  const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), allDay ? 0 : hour, allDay ? 0 : minute);
+  let end;
+  if (allDay) end = addDays(start, 1);
+  else if (endHM) end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), endHM[0], endHM[1]);
+  else end = new Date(start.getTime() + (duration || catMinutes || 60) * 60000);
+  if (end <= start) end = new Date(start.getTime() + 60 * 60000);
+  const title = /^\p{Extended_Pictographic}/u.test(rest) ? rest : `${emoji} ${rest}`;
+  return { title, emoji, start, end, allDay, warnings };
+}
+
+// Respuesta de «Usar modelo» (Apple Intelligence) en Atajos: el modelo entiende la frase
+// y estas reglas calculan la fecha (los modelos fallan con la aritmética del calendario).
+const CATEGORY_EMOJI = { salud: "🩺", vuelo: "✈️", tren: "🚆", cine: "🎬", concierto: "🎵",
+  comida: "🍽️", quedada: "🍻", deporte: "🏋️", trabajo: "💼", formacion: "🎓", cumple: "🎂",
+  festivo: "🎉", peluqueria: "💈", tramite: "📌", otro: "📅" };
+
+function parseModelReply(reply) {
+  if (reply && typeof reply === "object" && !Array.isArray(reply)) return "cuando" in reply ? reply : null;
+  const raw = String(reply || "").replace(/```(json)?/gi, "").replace(/[“”«»]/g, '"').replace(/[‘’]/g, "'");
+  const a = raw.indexOf("{"), b = raw.lastIndexOf("}");
+  if (a < 0 || b < a) return null;
+  const body = raw.slice(a, b + 1).replace(/,\s*([}\]])/g, "$1"); // comas sobrantes
+  try {
+    const d = JSON.parse(body);
+    return d && typeof d === "object" && "cuando" in d ? d : null;
+  } catch (e) { return null; }
+}
+
+// Formato de líneas «clave: valor» (el que pide apuntar-prompt.txt; más fácil para el modelo).
+const KEYS = ["titulo", "categoria", "cuando", "hora_inicio", "hora_fin", "duracion_min", "lugar"];
+function parseKeyValues(reply) {
+  const d = {};
+  for (const line of String(reply || "").split(/\r?\n/)) {
+    const m = /^\s*[-*•]?\s*\**([a-zA-Z_ áéíóú]+?)\**\s*[:=]\s*(.*?)\s*$/.exec(line);
+    if (!m) continue;
+    const key = plain(m[1]).trim().replace(/ /g, "_").replace(/^hora$/, "hora_inicio");
+    if (!KEYS.includes(key)) continue;
+    let v = m[2].replace(/^["'“”«]+|["'“”»]+$/g, "").trim();
+    if (/^(-|–|—|ninguno|ninguna|n\/a|vacio|null|no)$/i.test(plain(v))) v = "";
+    d[key] = v;
+  }
+  return d.cuando ? d : null;
+}
+
+// Lo que manda Atajos puede llegar como texto, lista, diccionario o archivo, por Parameter o
+// por Texts/Files. Se junta todo en un texto (o se devuelve el diccionario del modelo).
+function collectInput(a, readFile) {
+  const parts = [];
+  const add = (v) => {
+    if (v === null || v === undefined) return;
+    if (Array.isArray(v)) return v.forEach(add);
+    let t = "";
+    if (typeof v === "object") {
+      try { t = JSON.stringify(v); } catch (e) {}
+      if (!t || t === "{}") t = String(v); // objetos nativos de Atajos
+      if (t === "[object Object]") t = "";
+    } else t = String(v);
+    t = t.trim();
+    if (t) parts.push(t);
+  };
+  add(a.shortcutParameter);
+  add(a.plainTexts);
+  for (const f of a.fileURLs || []) { try { add(readFile(f)); } catch (e) {} }
+  const sources = [
+    a.shortcutParameter ? "Parameter" : null,
+    (a.plainTexts || []).length ? "Texts" : null,
+    (a.fileURLs || []).length ? "Files" : null,
+  ].filter(Boolean);
+  const p = a.shortcutParameter;
+  const kind = p === undefined || p === null ? "sin valor"
+    : `${typeof p}${typeof p === "object" ? " " + Object.prototype.toString.call(p) : ""}, ` +
+      `${JSON.stringify(String(p)).slice(0, 60)}`;
+  return { text: parts.join("\n"), sources, kind };
+}
+
+function parseStructured(d, now) {
+  const hhmm = (v) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(v || "").trim());
+    return m && +m[1] < 24 && +m[2] < 60 ? [+m[1], +m[2]] : null;
+  };
+  const when = String(d.cuando || "").trim();
+  if (!when) return { error: "No sé qué día es." };
+  const p = parseEvent(when, now); // solo el día: la hora la da el modelo
+  if (p.error) return p;
+  const cat = plain(String(d.categoria || "otro")).replace(/[^a-z]/g, "");
+  const known = CATEGORIES.find((c) => c[0] === CATEGORY_EMOJI[cat]);
+  const emoji = CATEGORY_EMOJI[cat] || "📅";
+  const catMinutes = known ? known[2] : 60;
+  let title = String(d.titulo || "").trim().replace(/\s+/g, " ") || "Evento";
+  title = title.charAt(0).toUpperCase() + title.slice(1);
+  const s0 = hhmm(d.hora_inicio), e0 = hhmm(d.hora_fin);
+  const y = p.start.getFullYear(), mo = p.start.getMonth(), da = p.start.getDate();
+  const minutes = parseInt(d.duracion_min, 10);
+  let start, end, allDay = !s0;
+  if (allDay) {
+    start = new Date(y, mo, da);
+    end = addDays(start, 1);
+  } else {
+    start = new Date(y, mo, da, s0[0], s0[1]);
+    if (e0) end = new Date(y, mo, da, e0[0], e0[1]);
+    else end = new Date(start.getTime() + (minutes > 0 && minutes <= 1440 ? minutes : catMinutes || 60) * 60000);
+    if (end <= start) end = new Date(end.getTime() + 24 * 3600000); // termina pasada la medianoche
+  }
+  return { title: `${emoji} ${title}`, emoji, start, end, allDay,
+    location: String(d.lugar || "").trim(), warnings: p.warnings };
+}
+
+function describe(p) {
+  const days = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+  const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+    "septiembre", "octubre", "noviembre", "diciembre"];
+  const s = p.start;
+  const when = `${days[s.getDay()]} ${s.getDate()} de ${months[s.getMonth()]}`;
+  const hm = (d) => `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return p.allDay ? `${p.title} · ${when} (todo el día)` : `${p.title} · ${when}, ${hm(s)}–${hm(p.end)}`;
+}
+
+// Atajos pasa la «Respuesta» de «Usar modelo» a Scriptable como [""]: el atajo la copia al
+// portapapeles y aquí se recoge, solo si tiene forma de respuesta del modelo (nunca un texto
+// cualquiera que hubiera copiado antes). Se vacía tras leerla para no reutilizarla.
+function mergeClipboard(text, clip) {
+  const own = String(text || "").split("\n").filter((l) => !/^\s*\[\s*""\s*\]\s*$/.test(l)).join("\n").trim();
+  const c = String(clip || "").trim();
+  if (!c || !(parseModelReply(c) || parseKeyValues(c))) return { text: own, used: false };
+  return { text: own ? `${c}\n${own}` : c, used: true };
+}
+
+// ---------------------------------------------------------------- otras acciones por voz
+// «cancela el cine del viernes», «mueve el médico al jueves a las 10», «recuérdame pagar el
+// alquiler el día 1». Se deciden por el verbo del principio (sin modelo).
+const ACTIONS = [
+  ["cancelar", /^(cancela|cancelar|borra|borrar|elimina|eliminar|quita|quitar|anula|anular)\b ?/],
+  ["mover", /^(mueve|mover|cambia|cambiar|pasa|pasar|aplaza|aplazar|retrasa|retrasar|adelanta|adelantar)\b ?/],
+  ["recordar", /^(recuerdame|recordarme|recordatorio|acuerdame)\b ?(que |de |a )?/],
+];
+const STOP = new Set(["el", "la", "los", "las", "de", "del", "con", "en", "un", "una", "que", "mi",
+  "al", "a", "y", "para", "por", "cita", "evento", "plan"]);
+
+function detectAction(text) {
+  const clean = cleanDictation(String(text || "").split("\n").map((l) => l.trim()).filter(Boolean).pop() || "");
+  const f = fold(clean).toLowerCase();
+  for (const [name, re] of ACTIONS) {
+    const m = re.exec(f);
+    if (m) return { action: name, rest: clean.slice(m[0].length).trim() };
+  }
+  return { action: "crear", rest: clean };
+}
+
+const noEmoji = (s) => String(s || "").replace(/^[\p{Extended_Pictographic}️‍]+\s*/u, "").trim();
+function keywords(text) {
+  return plain(noEmoji(text)).split(/[^a-z0-9ñ]+/).filter((w) => w.length >= 3 && !STOP.has(w));
+}
+
+// Qué evento se quiere decir: día (si se dijo) + palabras del título.
+function target(text, now) {
+  const p = parseEvent(text, now);
+  if (!p.error) return { day: p.start, words: keywords(p.title), timed: !p.allDay, start: p.start };
+  return { day: null, words: keywords(text), timed: false, start: null };
+}
+
+// Eventos que casan, mejor puntuados primero (más palabras en común, luego el más cercano).
+function findEvents(events, words) {
+  if (!words.length) return [];
+  return events
+    .map((e) => ({ e, score: words.filter((w) => plain(noEmoji(e.title)).includes(w)).length }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.e.startDate - b.e.startDate)
+    .filter((x, _, all) => x.score === all[0].score)
+    .map((x) => x.e);
+}
+
+function splitMove(rest) {
+  const m = /^(.*?)\s+(al|para el|para la|a las|a la(?= \d)|a el)\s+(.*)$/i.exec(rest);
+  return m ? { from: m[1], to: (/^a la/i.test(m[2]) ? m[2] + " " : /^al$/i.test(m[2]) ? "el " : "") + m[3] } : null;
+}
+
+// Nuevo inicio para «mover»: día y/o hora nuevos; lo que no se dice se conserva.
+function moveTo(ev, to, now) {
+  const withDay = parseEvent(to, now);
+  const hasDay = !withDay.error;
+  const timeOnly = hasDay ? withDay : parseEvent("hoy " + to, now);
+  if (timeOnly.error) return { error: "No entiendo a cuándo lo muevo." };
+  const hasTime = !timeOnly.allDay;
+  const base = hasDay ? withDay.start : ev.startDate;
+  const start = new Date(base.getFullYear(), base.getMonth(), base.getDate(),
+    hasTime ? timeOnly.start.getHours() : ev.startDate.getHours(),
+    hasTime ? timeOnly.start.getMinutes() : ev.startDate.getMinutes());
+  const dur = ev.isAllDay && hasTime ? 3600000 : ev.endDate - ev.startDate;
+  return { start, end: new Date(start.getTime() + dur), allDay: ev.isAllDay && !hasTime };
+}
+
+const dayLabel = (d) => d.toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+
+async function eventsAround(t, now) {
+  const from = t.day ? new Date(t.day.getFullYear(), t.day.getMonth(), t.day.getDate()) : new Date(now.getTime() - 3600000);
+  const to = t.day ? new Date(from.getTime() + 86400000) : new Date(now.getTime() + 90 * 86400000);
+  return CalendarEvent.between(from, to, []);
+}
+
+async function runAction(act, now) {
+  if (act.action === "recordar") {
+    const p = parseEvent(act.rest, now);
+    const r = new Reminder();
+    const title = noEmoji(p.error ? act.rest : p.title) || act.rest;
+    r.title = title.charAt(0).toUpperCase() + title.slice(1);
+    if (!p.error) {
+      r.dueDate = p.start;
+      r.dueDateIncludesTime = !p.allDay;
+    }
+    try { const list = await Calendar.forRemindersByTitle("Personal OS"); if (list) r.calendar = list; } catch (e) {}
+    r.save();
+    return `Te lo recordaré: ${r.title}` + (p.error ? "" : ` · ${dayLabel(p.start)}${p.allDay ? "" : ", " + hmStr(p.start)}`);
+  }
+  if (act.action === "cancelar") {
+    const t = target(act.rest, now);
+    const found = findEvents(await eventsAround(t, now), t.words);
+    if (!found.length) return `No encuentro «${act.rest}» en el calendario.`;
+    if (found.length > 1) return `Hay ${found.length}: ${found.slice(0, 3).map((e) => `${e.title} (${dayLabel(e.startDate)})`).join("; ")}. Dime también el día.`;
+    found[0].remove();
+    return `Cancelado: ${found[0].title} · ${dayLabel(found[0].startDate)}`;
+  }
+  const parts = splitMove(act.rest);
+  if (!parts) return "Dime adónde lo muevo, p. ej. «mueve el médico al jueves a las 10».";
+  const t = target(parts.from, now);
+  const found = findEvents(await eventsAround(t, now), t.words);
+  if (!found.length) return `No encuentro «${parts.from}» en el calendario.`;
+  if (found.length > 1) return `Hay ${found.length}: ${found.slice(0, 3).map((e) => `${e.title} (${dayLabel(e.startDate)})`).join("; ")}. Dime también el día.`;
+  const ev = found[0];
+  const m = moveTo(ev, parts.to, now);
+  if (m.error) return m.error;
+  ev.startDate = m.start;
+  ev.endDate = m.end;
+  ev.isAllDay = m.allDay;
+  ev.save();
+  return `Movido: ${ev.title} → ${dayLabel(m.start)}${m.allDay ? "" : ", " + hmStr(m.start)}`;
+}
+const hmStr = (d) => `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+async function main() {
+  const input = collectInput(args, (f) => FileManager.local().readString(f));
+  let clip = "";
+  try { clip = Pasteboard.pasteString() || ""; } catch (e) {}
+  const merged = mergeClipboard(input.text, clip);
+  if (merged.used) { try { Pasteboard.copyString(""); } catch (e) {} }
+  let text = merged.text;
+  const received = text;
+  // Desde Atajos/Siri no se puede mostrar ninguna ventana: se guarda directamente y se
+  // responde con setShortcutOutput. Solo se pregunta si se abre a mano en la app sin texto.
+  const fromShortcut = input.sources.length > 0 || merged.used;
+  const siri = fromShortcut || config.runsWithSiri || config.runsInActionExtension || !config.runsInApp;
+  if (!text && !siri) {
+    const a = new Alert();
+    a.title = "Apuntar";
+    a.message = "Ej.: «tengo médico el martes 24 a las 12:30»";
+    a.addTextField("¿Qué apunto?");
+    a.addAction("Apuntar");
+    a.addCancelAction("Cancelar");
+    if ((await a.present()) === -1) return Script.complete();
+    text = a.textFieldValue(0);
+  }
+  const act = detectAction(text);
+  if (act.action !== "crear") {
+    let msg;
+    try { msg = await runAction(act, new Date()); } catch (e) { msg = `No he podido hacerlo (${e.message || e}).`; }
+    if (siri) Script.setShortcutOutput(msg);
+    else { const a = new Alert(); a.title = "Apuntar"; a.message = msg; a.addAction("OK"); await a.present(); }
+    return Script.complete();
+  }
+  // Desde el atajo llegan la respuesta del modelo y, en la última línea, lo dictado: si el
+  // modelo no devolvió JSON válido, se usan las reglas con la frase original.
+  const fromModel = parseModelReply(text) || parseKeyValues(text);
+  if (!fromModel) text = text.split("\n").map((l) => l.trim()).filter(Boolean).pop() || text;
+  const p = fromModel ? parseStructured(fromModel, new Date()) : parseEvent(text, new Date());
+  if (p.error) {
+    if (siri) {
+      const got = received ? `«${received.slice(0, 160)}»` : "nada";
+      if (/^\[\s*""\s*\]$/.test(input.text.split("\n")[0] || "")) {
+        Script.setShortcutOutput("No lo he apuntado: la «Respuesta» de «Usar modelo» llega vacía a Scriptable. En el atajo, añade «Copiar al portapapeles» (Respuesta) antes de «Run Apuntar» y pon en Parameter el «Texto dictado».");
+        return Script.complete();
+      }
+      const via = input.sources.length ? input.sources.join(", ") : "ningún campo";
+      Script.setShortcutOutput(
+        `No lo he apuntado: ${p.error} (He recibido ${got} por ${via}; Parameter: ${input.kind}.)`
+      );
+    }
+    else { const e = new Alert(); e.title = "No lo he apuntado"; e.message = p.error; e.addAction("OK"); await e.present(); }
+    return Script.complete();
+  }
+  const ev = new CalendarEvent();
+  ev.title = p.title;
+  ev.startDate = p.start;
+  ev.endDate = p.end;
+  ev.isAllDay = p.allDay;
+  ev.notes = fromModel ? "Apuntado con Apple Intelligence" : `Apuntado: «${text}»`;
+  if (p.location) ev.location = p.location;
+  if (CALENDAR_NAME) ev.calendar = await Calendar.forEventsByTitle(CALENDAR_NAME);
+  const summary = describe(p) + (p.warnings.length ? `\n${p.warnings.join(" ")}` : "");
+  if (siri) {
+    try {
+      ev.save();
+      Script.setShortcutOutput(`Apuntado: ${summary}`);
+    } catch (e) {
+      Script.setShortcutOutput(`No lo he podido guardar (${e}). Abre Scriptable y da permiso al Calendario.`);
+    }
+    return Script.complete();
+  }
+  const c = new Alert();
+  c.title = "¿Lo apunto así?";
+  c.message = summary;
+  c.addAction("Guardar");
+  c.addAction("Editar antes (avisos, lugar…)");
+  c.addCancelAction("Cancelar");
+  const r = await c.present();
+  if (r === 0) ev.save();
+  else if (r === 1) await ev.presentEdit();
+  Script.complete();
+}
+
+// Scriptable también define `module`: lo que distingue el iPhone de los tests es la API de
+// Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
+// script termina antes de crear el evento y de devolver la respuesta.
+const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseKeyValues, parseStructured, collectInput, mergeClipboard, detectAction, findEvents, splitMove, moveTo, keywords };
+if (IN_SCRIPTABLE) await main();

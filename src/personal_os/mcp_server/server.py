@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
+from personal_os.finance import analyst, insights, investments, satellite
 from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
@@ -41,7 +43,13 @@ y Apple Calendario. Los datos viven en el Personal OS; Apple es la interfaz.
 - Finanzas: list_transactions y finance_summary son de solo lectura (importes en céntimos;
   negativo = cargo). Para categorizar, propose_category_rule crea una regla PROPUESTA que
   no se aplica hasta que el usuario la aprueba (`pos finance rule approve <id>`). Antes de
-  proponer, mira list_category_rules para no duplicar.
+  proponer, mira list_category_rules para no duplicar. Para comercios sueltos (que no se
+  repiten) usa categorize_transactions: queda marcado como «categorizado por Claude» y nunca
+  pisa lo que el usuario puso a mano. Si no sabes qué es un comercio, pregunta.
+- Inversiones: investments_overview (cartera, plan de inversión, aportaciones y patrimonio
+  neto). El valor de mercado sale solo de la valoración que sube el usuario (PDF de TR).
+- Cierre mensual: finance_month_close dice si faltan extractos, qué queda sin categoría, la
+  comparación con el mes anterior y si cuadran intereses y saveback.
 - Tras crear o modificar, llama a sync_apple. Calendario se actualiza al momento;
   Recordatorios cuando el iPhone ejecute su bridge (al cerrar la app o a horas fijas).
 """
@@ -229,6 +237,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "amount": fmt_eur(t.amount_cents),
             "category": t.category,
             "category_source": t.category_source,
+            "categorized_by_claude": t.by_claude,
             "account_id": t.account_id,
         }
 
@@ -321,7 +330,179 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "next_step": f"El usuario debe aprobarla: pos finance rule approve {rule.id}",
         }
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+    def categorize_transactions(assignments: list[dict[str, str]]) -> dict[str, Any]:
+        """Categoriza movimientos sueltos: assignments = [{"id": "txn_…", "category": "slug"}].
+        Para comercios que no se repiten (si se repiten, mejor propose_category_rule). Queda
+        marcado como hecho por Claude y el usuario lo revisa con `pos finance list --by-claude`.
+        Nunca cambia lo que el usuario categorizó a mano: esos devuelven error."""
+        svc = bootstrap.finance_service(open_app())
+        done, errors = [], []
+        for a in assignments[:200]:
+            try:
+                t = svc.set_category(_ctx(), str(a["id"]), str(a["category"]))
+                done.append({"id": t.id, "category": t.category})
+            except (KeyError, FinanceError) as exc:
+                errors.append({"id": a.get("id"), "error": str(exc)})
+        return {"categorized": done, "errors": errors}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def finance_month_close(month: str | None = None) -> dict[str, Any]:
+        """Estado del cierre de un mes (YYYY-MM; por defecto el anterior): extractos completos
+        por cuenta, movimientos sin categoría, gasto por categoría frente al mes anterior y
+        rendimiento del efectivo (intereses y saveback esperados vs abonados; estimación)."""
+        application = open_app()
+        if month is None:
+            today = application.clock.now().astimezone(ZoneInfo(application.config.timezone)).date()
+            month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+        try:
+            mc = bootstrap.finance_month_close(application, month)
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        s = mc.summary
+        return {
+            "month": mc.month,
+            "ready": mc.ready,
+            "statements_complete": mc.complete,
+            "coverage": [dataclasses.asdict(c) for c in mc.coverage],
+            "income_cents": s.income_cents,
+            "expense_cents": s.expense_cents,
+            "net_cents": s.net_cents,
+            "previous_net_cents": mc.previous.net_cents,
+            "uncategorized": s.uncategorized,
+            "categorized_by_claude": mc.by_claude,
+            "expense_deltas": [
+                {**dataclasses.asdict(d), "delta_cents": d.delta_cents} for d in mc.deltas
+            ],
+            "cash_yield": [
+                {
+                    **dataclasses.asdict(y),
+                    "interest_ratio": y.interest_ratio,
+                    "saveback_ratio": y.saveback_ratio,
+                }
+                for y in mc.yields
+            ],
+        }
+
+    @server.tool()
+    def name_unlabeled_transaction(transaction_id: str, merchant: str) -> dict[str, Any]:
+        """Pone el comercio a un movimiento SIN concepto del banco (descripción «… sin
+        concepto», típico de compras online de Trade Republic), p. ej. a partir del recibo
+        del correo con el mismo importe y fecha (±2 días). Rechaza movimientos que ya tienen
+        concepto. Usa el nombre comercial corto («Amazon», «Zara»). Aplica las reglas."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        try:
+            name = svc.name_placeholder(
+                _ctx(), transaction_id, merchant,
+                placeholders=[fallback for _, _, fallback in bootstrap.BANKS.values()],
+            )  # fmt: skip
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        txn = svc.get_transaction(transaction_id)
+        return {"id": transaction_id, "description": name, "category": txn.category}
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def finance_recurring(include_inactive: bool = False) -> dict[str, Any]:
+        """Cobros recurrentes detectados por patrón (suscripciones, cuotas, recibos; solo
+        lectura, céntimos): cadencia, último importe, próximo cobro previsto, subida de precio
+        (`previous_cents`) y si el importe es variable; más posibles cobros duplicados de la
+        última semana. Útil para revisar suscripciones y detectar subidas."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        items = analyst.recurring(svc, today=today, include_inactive=include_inactive)
+        return {
+            "today": today,
+            "recurring": [
+                {
+                    **json_safe(dataclasses.asdict(r)),
+                    "monthly_cents": r.monthly_cents,
+                    "rise_cents": r.rise_cents,
+                    "variable": r.variable,
+                }
+                for r in items
+            ],
+            "monthly_total_cents": sum(r.monthly_cents for r in items if r.active),
+            "duplicates": [
+                json_safe(dataclasses.asdict(d)) for d in analyst.duplicates(svc, today=today)
+            ],
+        }
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def satellite_overview() -> dict[str, Any]:
+        """Cartera satélite por reglas (solo lectura, céntimos; ADR 0014): presupuesto
+        disponible (tras colchón de emergencia y plan), ideas de compra/venta/vigilar sobre la
+        lista de seguimiento con stop y objetivo, señales técnicas (caída desde máximos de 52
+        semanas, medias de 50/200, RSI), impuestos del año (base del ahorro) y comparación con
+        el índice. Son ideas por reglas, no órdenes: el usuario decide y opera en su bróker."""
+        application = open_app()
+        cfg = application.config.finance.satellite
+        if not cfg.enabled:
+            raise ToolError("Sin lista de seguimiento en [finance.satellite] de config.toml")
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        habit = insights.build(svc, today=today).habit.expense_cents
+        o = satellite.overview(svc, cfg, today=today, monthly_expense_cents=habit)
+        return json_safe({
+            "today": today,
+            "budget": {**dataclasses.asdict(o.budget), "available_cents": o.budget.available_cents,
+                       "free_cash_cents": o.budget.free_cash_cents, "why_zero": o.budget.why_zero},
+            "ideas": [dataclasses.asdict(i) for i in o.ideas],
+            "signals": [{**dataclasses.asdict(s), "drawdown_pct": round(s.drawdown, 1),
+                         "healthy_trend": s.healthy_trend} for s in o.signals],
+            "positions": [dataclasses.asdict(p) for p in o.positions],
+            "taxes": {**dataclasses.asdict(o.taxes), "tax_cents": o.taxes.tax_cents},
+            "versus_benchmark": dataclasses.asdict(o.versus) if o.versus else None,
+            "rules": dataclasses.asdict(cfg),
+        })  # fmt: skip
+
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
+    def investments_overview(months: int = 12) -> dict[str, Any]:
+        """Inversiones y patrimonio (solo lectura; importes en céntimos): cartera de la última
+        valoración frente a lo invertido, plan de inversión deducido y su cumplimiento por mes,
+        y patrimonio neto a fin de mes (efectivo + inversiones; `investments_basis` dice si
+        van a valor de mercado o a coste)."""
+        application = open_app()
+        svc = bootstrap.finance_service(application)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        months = max(1, min(months, 60))
+
+        def plain(obj, **extra):
+            return {**json_safe(dataclasses.asdict(obj)), **extra}
+
+        return {
+            "today": today,
+            "portfolios": [
+                plain(p, gain_cents=p.gain_cents, gain_pct=p.gain_pct)
+                for p in investments.portfolios(svc)
+            ],
+            "plan": [plain(p) for p in investments.deduce_plan(svc, today)],
+            "contributions": [
+                plain(c, plan_ok=c.plan_ok, net_cents=c.net_cents)
+                for c in investments.contributions(svc, months=months, today=today)
+            ],
+            "net_worth": [
+                plain(n, cash_cents=n.cash_cents, total_cents=n.total_cents)
+                for n in investments.net_worth(svc, months=months, today=today)
+            ],
+        }
+
     return server
+
+
+def json_safe(value: Any) -> Any:
+    """Decimal → str (participaciones y precios exactos)."""
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [json_safe(v) for v in value]
+    if isinstance(value, Decimal):
+        return str(value)
+    return value
 
 
 def main() -> None:

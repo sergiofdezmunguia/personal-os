@@ -29,7 +29,7 @@ ops/          operación: `doctor` (diagnóstico, solo lectura) y `drill` (simul
 bootstrap.py  composition root: conecta todo (solo lo importan las interfaces)
 adapters/     comunicación con proveedores (apple/: buzón Recordatorios, CalDAV, iCalendar)
 sync/         ports (interfaces + DTOs), motores de sync, enlaces, auditoría de operaciones
-tasks/ calendar/ finance/   dominio; módulos hermanos independientes
+tasks/ calendar/ finance/ habits/   dominio; módulos hermanos independientes
 core/         db+migraciones, backups, ids, reloj, eventos, config, secretos, rrule
 bridge/scriptable/ ejecutor en el iPhone (JS); docs/protocol-reminders-v1.md es el contrato
 ```
@@ -62,9 +62,10 @@ Reglas impuestas por `lint-imports`:
 
 - `.mcp.json` registra `personal-os` (`uv run pos-mcp`). Herramientas: `create_task`,
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
-  `sync_apple`, `list_transactions`, `finance_summary`, `list_category_rules`,
-  `propose_category_rule`. Actor de auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las
-  existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
+  `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
+  `list_category_rules`, `propose_category_rule`, `categorize_transactions`,
+  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`, `satellite_overview`. Actor de
+  auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
   `format_python.py` (ruff tras cada edición), `check_on_stop.py` (`scripts/check.sh` al
@@ -82,12 +83,33 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006.
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios) y 0014 (satélite).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
 - Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
-- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`). Nunca leer extractos
+- Categoría directa desde MCP (`categorize_transactions`) ⇒ `categorized_by = 'mcp'`,
+  revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
+- Cierre mensual: skill `.claude/skills/monthly-close/` + `finance/close.py` (solo lectura);
+  bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
+- Open banking (ADR 0010): cliente HTTP `adapters/enablebanking.py` (solo lectura), parser
+  puro `finance/importers/enablebanking.py`, orquestación `bootstrap.bank_sync` (en `pos sync`,
+  máx. una consulta cada 5 h por el cupo PSD2). Ids provisionales `prov:` (TR no da id): los
+  sustituye un id real posterior. Para inspeccionar respuestas reales, solo estructura
+  enmascarada; cada consulta gasta cupo del banco.
+- Analista (ADR 0011): `finance/analyst.py` (recurrentes, subidas, duplicados, semana) y
+  `ops/notices.py` → `panel/avisos.json` → notificaciones con `Personal OS Avisos.js`.
+- Satélite (ADR 0014): `finance/satellite.py`, reglas en `[finance.satellite]`, pestaña Ideas,
+  MCP `satellite_overview`, skill `satellite-review`. Ideas, nunca órdenes ni promesas.
+- Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
+  importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
+  de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.
+- Panel v2 con pestañas Hoy · Dinero · Cartera · Hábitos (`ops/panel_tabs.py`); hábitos de
+  Apple Salud por fichero (`habits/health.py`, ADR 0013); la agenda la inyecta el visor.
+- Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
+  (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.
+  Para revisar su diseño, renderízalo con datos inventados, nunca con los reales.
+- **Tests y repo solo con datos inventados** (`tests/santander_fake.py`, `tests/trade_republic_fake.py`, `tests/trade_republic_activity_fake.py`). Nunca leer extractos
   reales salvo para importarlos, ni copiar su contenido a ficheros, commits o mensajes.
 
 ## Secretos y datos

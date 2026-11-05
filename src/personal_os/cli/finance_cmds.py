@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -11,8 +11,12 @@ import typer
 
 from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
+from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
-from personal_os.finance.importers import StatementError, detect
+from personal_os.finance import analyst
+from personal_os.finance import investments as inv
+from personal_os.finance.importers import StatementError, describe, detect
+from personal_os.finance.investments import import_document
 from personal_os.finance.models import FinanceError, fmt_eur
 
 app = typer.Typer(
@@ -37,7 +41,7 @@ def _this_month() -> str:
 
 def _tx_line(t) -> str:
     cat = t.category or "·"
-    mark = "*" if t.category_source == "manual" else ""
+    mark = "~" if t.by_claude else "*" if t.category_source == "manual" else ""
     return f"{t.id}  {t.booking_date}  {fmt_eur(t.amount_cents):>14}  {cat + mark:<16} {t.description[:70]}"
 
 
@@ -47,27 +51,25 @@ def import_(
     dry_run: bool = typer.Option(False, "--dry-run", help="Solo analiza; no guarda nada"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Importa un extracto (Santander .xls o PDF «Extracto de cuenta» de Trade Republic). Idempotente: reimportar no duplica."""
+    """Importa un extracto: Santander .xls; Trade Republic PDF «Extracto de cuenta», CSV «Exportación de transacción» o PDF «Extracto del patrimonio neto». Idempotente: reimportar no duplica."""
     data = file.read_bytes()
     try:
-        statement = detect(data, file.name)
+        parsed = detect(data, file.name)
     except StatementError as exc:
         fail(str(exc))
-    period = statement.period
+    period = parsed.period
     if dry_run:
-        typer.echo(
-            f"{statement.source}: {statement.account_name} ····{statement.last4} · "
-            f"{len(statement.transactions)} movimientos · {period[0]} → {period[1]}"
-        )
-        for w in statement.warnings:
+        typer.echo(describe(parsed))
+        for w in parsed.warnings:
             typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
         typer.echo("(simulación: no se ha guardado nada)")
         return
     svc = _svc()
     try:
-        result = svc.import_statement(
+        result = import_document(
+            svc,
             ChangeContext.cli(),
-            statement,
+            parsed,
             file_name=file.name,
             file_sha256=hashlib.sha256(data).hexdigest(),
         )
@@ -77,15 +79,279 @@ def import_(
         echo_json(result)
         return
     typer.echo(f"✓ {result.account.label} · {period[0]} → {period[1]}")
-    typer.echo(
-        f"  {result.rows_new} nuevos · {result.rows_duplicate} ya existían · "
-        f"{result.categorized} categorizados por reglas"
-    )
+    typer.echo(f"  {_result_counts(result)}")
     for w in result.warnings:
         typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
     pending = len(svc.list_transactions(uncategorized=True, limit=None))
     if pending:
         typer.echo(f"  {pending} movimientos sin categoría: `pos finance list --uncategorized`")
+
+
+def _result_counts(r) -> str:
+    if r.already_imported:
+        return "ya estaba importado"
+    parts = [f"{r.rows_new} nuevos", f"{r.rows_duplicate} ya existían"]
+    if r.rows_linked:
+        parts.append(f"{r.rows_linked} enlazados con lo ya importado")
+    if r.trades_new:
+        parts.append(f"{r.trades_new} operaciones")
+    if r.categorized:
+        parts.append(f"{r.categorized} categorizados por reglas")
+    return " · ".join(parts)
+
+
+@app.command("inbox")
+def inbox(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Importa los extractos de la bandeja ([finance].inbox_dir) y los archiva en importados/."""
+    application = wiring.open_app()
+    try:
+        report = wiring.finance_inbox(application)
+    except ConfigError as exc:
+        fail(str(exc))
+    if report is None:
+        fail(
+            f"Falta [finance].inbox_dir en {application.config.config_file} "
+            "(la carpeta de iCloud Drive donde dejas los extractos)"
+        )
+    if as_json:
+        echo_json(report.items)
+        return
+    if not report.items:
+        typer.echo("La bandeja está vacía.")
+    for item in report.items:
+        r = item.result
+        if r and r.already_imported:
+            typer.echo(f"= {item.file_name}: ya estaba importado")
+        elif r:
+            typer.echo(f"✓ {item.file_name} → {r.account.label}: {_result_counts(r)}")
+            for w in r.warnings:
+                typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+        if item.error:
+            typer.secho(f"✗ {item.file_name}: {item.error}", fg=typer.colors.RED)
+        elif item.archived_to:
+            typer.echo(f"  archivado en {item.archived_to}")
+        elif item.deferred:
+            typer.echo("  recién subido: se archivará en la próxima sync (cuando iCloud termine)")
+    pending = len(_svc().list_transactions(uncategorized=True, limit=None))
+    if report.items and pending:
+        typer.echo(f"{pending} movimientos sin categoría: `pos finance list --uncategorized`")
+
+
+@app.command("bank-sync")
+def bank_sync(
+    days: int = typer.Option(wiring.BANK_DAYS, "--days", help="Días hacia atrás a pedir"),
+    force: bool = typer.Option(
+        False, "--force", help="Consulta aunque la última sea reciente (gasta cupo PSD2)"
+    ),
+) -> None:
+    """Trae saldo y movimientos de los bancos conectados por open banking (también en `pos sync`)."""
+    application = wiring.open_app()
+    try:
+        report = wiring.bank_sync(application, days=days, force=force)
+    finally:
+        application.db.close()
+    if report is None:
+        fail("Open banking no configurado (docs/finance.md, «Open banking»)")
+    if report.stats.get("skipped_recent"):
+        typer.echo(
+            f"Última consulta hace menos de {wiring.BANK_MIN_HOURS} h; nada que hacer"
+            " (usa --force si de verdad hace falta)."
+        )
+    else:
+        new = report.stats.get("transactions_new", 0)
+        linked = report.stats.get("transactions_linked", 0)
+        typer.echo(
+            f"✓ {report.stats.get('accounts', 0)} cuentas · {new} nuevos · {linked} enlazados"
+        )
+    for w in report.warnings:
+        typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+    for e in report.errors:
+        typer.secho(f"  error: {e}", fg=typer.colors.RED)
+    if report.errors:
+        raise typer.Exit(1)
+
+
+BANK_ASPSP = {"santander": ("Banco Santander", "ES"), "traderepublic": ("Trade Republic", "ES")}
+
+
+def _wait_for_code(redirect_url: str, timeout: int) -> str | None:
+    """Servidor de un solo uso en la dirección de retorno (p. ej. localhost:8765) que recoge el
+    `code` de la redirección del banco. None si no llega a tiempo."""
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    target = urlparse(redirect_url)
+    if target.hostname not in ("localhost", "127.0.0.1"):
+        return None
+    got: dict[str, str] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = parse_qs(urlparse(self.path).query)
+            ok = "code" in q
+            if ok:
+                got["code"] = q["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = "Autorizado. Ya puedes cerrar esta pestaña." if ok else "Falta el código."
+            self.wfile.write(f"<p style='font:18px system-ui'>{msg}</p>".encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("0.0.0.0", target.port or 80), Handler)
+    server.timeout = 2
+    stop = threading.Event()
+    threading.Timer(timeout, stop.set).start()
+    while not got and not stop.is_set():
+        server.handle_request()
+    server.server_close()
+    stop.set()
+    return got.get("code")
+
+
+@app.command("bank-auth")
+def bank_auth(
+    alias: str = typer.Argument(..., help="santander | traderepublic"),
+    days: int = typer.Option(
+        180, "--days", help="Días de validez pedidos (el banco puede dar menos)"
+    ),
+    aspsp: str | None = typer.Option(None, "--aspsp", help="Nombre del banco en Enable Banking"),
+    country: str | None = typer.Option(None, "--country"),
+) -> None:
+    """Renueva la autorización de open banking de un banco: abre el enlace del banco, recoge
+    la autorización y sustituye esa sesión en sessions.json (ADR 0010)."""
+    import secrets
+    from datetime import UTC
+
+    from personal_os.adapters.enablebanking import BankingError, EnableBankingClient
+
+    if alias not in BANK_ASPSP and not (aspsp and country):
+        fail(f"Banco desconocido {alias!r}: usa santander, traderepublic o --aspsp/--country")
+    name, ctry = BANK_ASPSP.get(alias, (aspsp, country))
+    name, ctry = aspsp or name, country or ctry
+    application = wiring.open_app()
+    try:
+        client = EnableBankingClient(application.config.config_dir / "enablebanking")
+        redirect = client.redirect_urls()[0]
+        until = (datetime.now(UTC) + timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000000+00:00"
+        )
+        url = client.start_auth(name, ctry, redirect_url=redirect, valid_until=until,
+                                state=secrets.token_urlsafe(12))  # fmt: skip
+        typer.echo("Abre este enlace, entra en tu banco y autoriza el acceso de solo lectura:")
+        typer.echo(url)
+        if wiring.open_url(url):
+            typer.echo("(abierto en el navegador)")
+        code = _wait_for_code(redirect, timeout=600)
+        if code is None:
+            pasted = typer.prompt("Pega aquí la dirección completa a la que te ha llevado el banco")
+            from urllib.parse import parse_qs, urlparse
+
+            code = (parse_qs(urlparse(pasted.strip()).query).get("code") or [None])[0]
+        if not code:
+            fail("No ha llegado el código de autorización")
+        session = client.create_session(code)
+        if not session.accounts:
+            fail("El banco no ha autorizado ninguna cuenta")
+        client.save_session(alias, session)
+    except (BankingError, IndexError, KeyError) as exc:
+        fail(f"No se pudo renovar: {exc}")
+    finally:
+        application.db.close()
+    typer.echo(
+        f"✓ {alias}: {len(session.accounts)} cuenta(s), válida hasta {session.valid_until[:10]}"
+    )
+
+
+@app.command("close")
+def close(
+    month: str | None = typer.Argument(None, help="YYYY-MM (por defecto, el mes anterior)"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cierre mensual: extractos completos, pendientes, comparación y rendimiento del efectivo."""
+    application = wiring.open_app()
+    if month is None:
+        today = datetime.now(ZoneInfo(application.config.timezone)).date()
+        month = (today.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    try:
+        mc = wiring.finance_month_close(application, month)
+    except FinanceError as exc:
+        fail(str(exc))
+    if as_json:
+        echo_json(_close_view(mc))
+        return
+    s = mc.summary
+    state = "listo para cerrar" if mc.ready else "pendiente"
+    typer.echo(f"Cierre {mc.month} · {state}")
+    typer.echo("\nExtractos:")
+    for c in mc.coverage:
+        mark = "✓" if c.complete else "!"
+        typer.echo(f"  {mark} {c.label:<34} último movimiento {c.last_transaction or '—'}")
+    if not mc.complete:
+        typer.echo("    → deja el extracto que falta en la bandeja y `pos finance inbox`")
+    typer.echo(
+        f"\nIngresos {fmt_eur(s.income_cents)} · Gastos {fmt_eur(s.expense_cents)} · "
+        f"Neto {fmt_eur(s.net_cents)}  (mes anterior: {fmt_eur(mc.previous.net_cents)})"
+    )
+    if s.uncategorized:
+        typer.echo(
+            f"  {s.uncategorized} movimientos sin categoría ({fmt_eur(s.uncategorized_cents)})"
+        )
+    if mc.by_claude:
+        typer.echo(f"  {mc.by_claude} categorizados por Claude: `pos finance list --by-claude`")
+    moved = [d for d in mc.deltas if d.delta_cents and (d.total_cents or d.previous_cents)]
+    if moved:
+        typer.echo("\nGasto por categoría (frente al mes anterior):")
+        for d in moved:
+            typer.echo(f"  {d.name:<30} {fmt_eur(d.total_cents):>13}  ({_signed(d.delta_cents)})")
+    for y in mc.yields:
+        typer.echo(f"\nRendimiento de {y.label} (estimado):")
+        typer.echo(f"  Saldo medio {fmt_eur(y.average_balance_cents)}")
+        if y.interest_rate:
+            typer.echo(
+                f"  Intereses al {_pct(y.interest_rate)}: esperados {fmt_eur(y.interest_expected_cents)}"
+                f" brutos · abonados {_received(y.interest_received_cents, y.interest_ratio)}"
+            )
+        if y.saveback_rate:
+            typer.echo(
+                f"  Saveback {_pct(y.saveback_rate)} de {fmt_eur(y.card_spend_cents)} con tarjeta:"
+                f" esperado {fmt_eur(y.saveback_expected_cents)} · abonado "
+                f"{_received(y.saveback_received_cents, y.saveback_ratio)}"
+            )
+
+
+def _pct(v: float) -> str:
+    return f"{v:g} %".replace(".", ",")
+
+
+def _signed(cents: int) -> str:
+    return ("+" if cents > 0 else "") + fmt_eur(cents)
+
+
+def _received(cents: int | None, ratio: float | None) -> str:
+    if cents is None:
+        return "pendiente (llega el mes siguiente)"
+    return fmt_eur(cents) + (f" ({ratio:.0%} de lo esperado)" if ratio is not None else "")
+
+
+def _close_view(mc) -> dict:
+    return {
+        "month": mc.month,
+        "ready": mc.ready,
+        "complete": mc.complete,
+        "summary": {**mc.summary.__dict__, "net_cents": mc.summary.net_cents},
+        "previous_net_cents": mc.previous.net_cents,
+        "coverage": mc.coverage,
+        "deltas": [{**d.__dict__, "delta_cents": d.delta_cents} for d in mc.deltas],
+        "yields": [
+            {**y.__dict__, "interest_ratio": y.interest_ratio, "saveback_ratio": y.saveback_ratio}
+            for y in mc.yields
+        ],
+        "categorized_by_claude": mc.by_claude,
+    }
 
 
 @app.command("accounts")
@@ -120,12 +386,15 @@ def list_(
     month: str | None = typer.Option(None, "--month", "-m", help="YYYY-MM"),
     category: str | None = typer.Option(None, "--category", "-c"),
     uncategorized: bool = typer.Option(False, "--uncategorized", "-u"),
+    by_claude: bool = typer.Option(
+        False, "--by-claude", help="Solo los que categorizó Claude (para revisarlos)"
+    ),
     search: str | None = typer.Option(None, "--search", "-s", help="Texto en el concepto"),
     account: str | None = typer.Option(None, "--account", help="id o últimos 4 del IBAN"),
     limit: int = typer.Option(50, "--limit", "-n"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Movimientos (más recientes primero). `*` = categoría puesta a mano."""
+    """Movimientos (más recientes primero). `*` = a mano por ti · `~` = por Claude."""
     svc = _svc()
     try:
         acc = svc.get_account(account).id if account else None
@@ -134,6 +403,7 @@ def list_(
             account_id=acc,
             category=category,
             uncategorized=uncategorized,
+            by_claude=by_claude,
             search=search,
             limit=limit,
         )
@@ -197,6 +467,148 @@ def category_add(
     typer.echo(f"✓ {c.slug} ({c.kind}{', dentro de ' + c.parent if c.parent else ''})")
 
 
+def _today() -> str:
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        return application.clock.now().astimezone(tz).date().isoformat()
+    finally:
+        application.db.close()
+
+
+@app.command("prices")
+def prices(
+    force: bool = typer.Option(False, "--force", help="Descarga aunque se hiciera hace poco"),
+) -> None:
+    """Descarga el último cierre de cada fondo/ETF en cartera (justETF/Yahoo) y muestra la
+    cartera a precio de hoy (ADR 0012)."""
+    application = wiring.open_app()
+    try:
+        report = wiring.update_prices(application, force=force)
+        if report is not None:
+            for e in report.errors:
+                typer.echo(f"  aviso: {e}")
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        for lp in inv.live_portfolios(svc, today=today):
+            typer.echo(f"{lp.label}: {fmt_eur(lp.value_cents)} · coste {fmt_eur(lp.cost_cents)}"
+                       f" · {fmt_eur(lp.gain_cents)} ({lp.gain_pct} %)"
+                       f" · última sesión {fmt_eur(lp.day_change_cents)} · cierre {lp.as_of}")  # fmt: skip
+            for p in lp.positions:
+                val = fmt_eur(p.value_cents) if p.value_cents is not None else "sin precio"
+                typer.echo(f"  {p.name[:40]:<40} {val:>14}  {p.price_date or ''}")
+    finally:
+        application.db.close()
+
+
+@app.command("ideas")
+def ideas_cmd() -> None:
+    """Satélite por reglas (ADR 0014): presupuesto, ideas de compra/venta sobre la lista de
+    seguimiento, impuestos del año y comparación con el índice. Son ideas, no órdenes."""
+    from personal_os.finance import insights, satellite
+
+    application = wiring.open_app()
+    try:
+        cfg = application.config.finance.satellite
+        if not cfg.enabled:
+            fail(
+                "Sin lista de seguimiento: añade [finance.satellite] a config.toml (ver plantilla)"
+            )
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        habit = insights.build(svc, today=today).habit.expense_cents
+        o = satellite.overview(svc, cfg, today=today, monthly_expense_cents=habit)
+    finally:
+        application.db.close()
+    b = o.budget
+    typer.echo(f"Satélite: tope {fmt_eur(b.cap_cents)} ({cfg.share:g} % del patrimonio) · "
+               f"invertido {fmt_eur(b.invested_cents)} · disponible {fmt_eur(b.available_cents)}")  # fmt: skip
+    typer.echo(f"  Efectivo {fmt_eur(b.cash_cents)} − colchón {fmt_eur(b.emergency_cents)} "
+               f"({cfg.emergency_months:g} meses) − plan {fmt_eur(b.plan_cents)} = {fmt_eur(b.free_cash_cents)}")  # fmt: skip
+    if b.why_zero:
+        typer.echo(f"  {b.why_zero}")
+    for i in o.ideas:
+        amount = f" · {fmt_eur(i.amount_cents)}" if i.amount_cents else ""
+        levels = (
+            f" · stop {i.stop} € · objetivo {i.target} €" if i.stop and i.kind != "vender" else ""
+        )
+        typer.echo(f"{i.kind.upper():<8} {i.name}: {i.price} € · {i.reason}{amount}{levels}")
+        for w in i.warnings:
+            typer.echo(f"         ⚠ {w}")
+    t = o.taxes
+    typer.echo(f"Impuestos {t.year}: ganancias realizadas {fmt_eur(t.realized_cents)} + dividendos "
+               f"{fmt_eur(t.dividends_cents)} → unos {fmt_eur(t.tax_cents)} de IRPF")  # fmt: skip
+    if o.versus:
+        v = o.versus
+        typer.echo(f"Frente al índice desde {v.since}: satélite {fmt_eur(v.satellite_cents)} vs "
+                   f"{fmt_eur(v.benchmark_cents)} ({fmt_eur(v.diff_cents)})")  # fmt: skip
+    typer.echo("Ideas por reglas, no recomendaciones: las órdenes las das tú en tu bróker.")
+
+
+@app.command("recurring")
+def recurring(
+    all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cobros recurrentes (suscripciones, cuotas, recibos): coste al mes, próximo cobro y
+    subidas de precio. Detectados por patrón, sin reglas que mantener."""
+    today = _today()
+    items = analyst.recurring(_svc(), today=today, include_inactive=all_)
+    if as_json:
+        echo_json([
+            {**r.__dict__, "monthly_cents": r.monthly_cents, "rise_cents": r.rise_cents,
+             "variable": r.variable}
+            for r in items
+        ])  # fmt: skip
+        return
+    if not items:
+        typer.echo("No se detectan cobros recurrentes.")
+        return
+    total = 0
+    for r in items:
+        if r.active:
+            total += r.monthly_cents
+        state = "" if r.active else "  (ya no cobra)"
+        rise = f"  ↑ antes {fmt_eur(r.previous_cents)}" if r.previous_cents else ""
+        nxt = f"próximo ~{r.next_day}" if r.next_day else f"último {r.last_day}"
+        amount = ("≈" if r.variable else "") + fmt_eur(r.last_cents)
+        typer.echo(
+            f"{r.merchant[:28]:<28} {r.cadence:<8} {amount:>12}  {nxt}  [{r.category or '·'}]"
+            f"{rise}{state}"
+        )
+    typer.echo(f"Total activo: {fmt_eur(total)} al mes ({fmt_eur(total * 12)} al año)")
+
+
+@app.command("week")
+def week(
+    last_day: str | None = typer.Argument(None, help="Último día (YYYY-MM-DD); por defecto hoy"),
+) -> None:
+    """Resumen de 7 días frente a una semana habitual, con subidas y posibles duplicados."""
+    svc = _svc()
+    day = last_day or _today()
+    w = analyst.week(svc, last_day=day)
+    s = w.spend
+    typer.echo(
+        f"Semana {s.first_day} → {s.last_day}: {fmt_eur(s.expense_cents)} en {s.payments} pagos"
+    )
+    if w.habit_cents:
+        typer.echo(
+            f"  Habitual: {fmt_eur(w.habit_cents)} ({fmt_eur(s.expense_cents - w.habit_cents)})"
+        )
+    for name, cents in s.by_category[:5]:
+        typer.echo(f"  {name[:24]:<24} {fmt_eur(cents):>12}")
+    if s.uncategorized:
+        typer.echo(f"  Sin categoría: {s.uncategorized} mov. ({fmt_eur(s.uncategorized_cents)})")
+    for r in w.rises:
+        typer.echo(f"  ↑ {r.merchant}: {fmt_eur(r.previous_cents)} → {fmt_eur(r.last_cents)}")
+    for r in w.new_recurring:
+        typer.echo(f"  Nuevo recurrente: {r.merchant} ({fmt_eur(r.last_cents)} al mes)")
+    for d in analyst.duplicates(svc, today=day):
+        typer.echo(f"  ¿Duplicado? {d.count} × {fmt_eur(d.cents)} en {d.merchant} el {d.day}")
+
+
 @app.command("summary")
 def summary(
     month: str | None = typer.Argument(None, help="YYYY-MM (por defecto, el mes actual)"),
@@ -229,6 +641,140 @@ def summary(
         typer.echo(f"  {c.name:<32} {fmt_eur(c.total_cents):>14}  {c.count:>3}")
         for sub in c.children:
             typer.echo(f"    · {sub.name:<28} {fmt_eur(sub.total_cents):>14}  {sub.count:>3}")
+
+
+# --------------------------------------------------------------------------- inversiones
+
+
+def _today() -> str:
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        return application.clock.now().astimezone(tz).date().isoformat()
+    finally:
+        application.db.close()
+
+
+def _pct_signed(v: float | None) -> str:
+    return "" if v is None else f"{v:+.2f} %".replace(".", ",")
+
+
+@app.command("portfolio")
+def portfolio(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Cartera: valor de la última valoración frente a lo invertido (coste medio)."""
+    ports = inv.portfolios(_svc())
+    if as_json:
+        echo_json(
+            [{**p.__dict__, "gain_cents": p.gain_cents, "gain_pct": p.gain_pct} for p in ports]
+        )
+        return
+    if not ports:
+        typer.echo("Sin inversiones: importa la exportación CSV de Trade Republic.")
+    for p in ports:
+        when = f"valoración del {p.as_of}" if p.as_of else "sin valoración"
+        typer.echo(f"{p.label} · {when}")
+        for x in p.positions:
+            value = fmt_eur(x.value_cents) if x.value_cents is not None else "—"
+            typer.echo(
+                f"  {x.name[:34]:<34} {value:>14}  coste {fmt_eur(x.cost_cents):>13}"
+                f"  {_pct_signed(x.gain_pct):>9}"
+            )
+        typer.echo("")
+        if p.value_cents is not None:
+            typer.echo(f"  Valor          {fmt_eur(p.value_cents):>14}")
+        typer.echo(f"  Invertido      {fmt_eur(p.cost_cents):>14}")
+        if p.gain_cents is not None:
+            typer.echo(f"  Resultado      {fmt_eur(p.gain_cents):>14}  {_pct_signed(p.gain_pct)}")
+        if p.cash_cents is not None:
+            typer.echo(f"  Efectivo       {fmt_eur(p.cash_cents):>14}  (a la misma fecha)")
+        if p.invested_after_cents:
+            typer.echo(
+                f"  Desde la valoración: {fmt_eur(p.invested_after_cents)} invertidos (a coste)"
+            )
+        if p.dividends_cents or p.realized_cents:
+            typer.echo(
+                f"  Dividendos netos {fmt_eur(p.dividends_cents)} · ventas: resultado "
+                f"{fmt_eur(p.realized_cents)}"
+            )
+        for w in p.warnings:
+            typer.secho(f"  aviso: {w}", fg=typer.colors.YELLOW)
+
+
+@app.command("contributions")
+def contributions(
+    months: int = typer.Option(12, "--months", "-n", min=1, max=120),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Aportaciones por mes (plan de inversión y compras sueltas) y si se cumple el plan."""
+    svc = _svc()
+    today = _today()
+    plan = inv.deduce_plan(svc, today)
+    rows = inv.contributions(svc, months=months, today=today)
+    if as_json:
+        echo_json({"plan": plan, "months": [{**r.__dict__, "plan_ok": r.plan_ok} for r in rows]})
+        return
+    if plan:
+        typer.echo(f"Plan de inversión (deducido de los últimos {inv.PLAN_LOOKBACK_MONTHS} meses):")
+        for p in plan:
+            typer.echo(
+                f"  {p.name[:34]:<34} {fmt_eur(p.amount_cents):>11} × {p.per_month}/mes"
+                f"  ≈ {fmt_eur(p.monthly_cents)}/mes"
+            )
+        typer.echo(
+            f"  {'Total':<34} {'':>11}         ≈ {fmt_eur(sum(p.monthly_cents for p in plan))}/mes"
+        )
+        typer.echo("")
+    names = {p.isin: p.name for p in plan}
+    typer.echo(f"  {'Mes':<8} {'Plan':>13} {'Sueltas':>13} {'Ventas':>13}  Plan")
+    for r in rows:
+        status = (
+            "en curso"
+            if r.in_progress
+            else "—"
+            if r.plan_ok is None
+            else "✓"
+            if r.plan_ok
+            else "✗ " + ", ".join(names.get(i, i)[:18] for i in r.plan_short)
+        )
+        typer.echo(
+            f"  {r.month:<8} {fmt_eur(r.plan_cents):>13} {fmt_eur(r.manual_cents):>13}"
+            f" {fmt_eur(r.sold_cents):>13}  {status}"
+        )
+
+
+@app.command("networth")
+def networth(
+    months: int = typer.Option(12, "--months", "-n", min=1, max=120),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Patrimonio neto a fin de cada mes: efectivo de todas las cuentas + inversiones."""
+    points = inv.net_worth(_svc(), months=months, today=_today())
+    if as_json:
+        echo_json(
+            [
+                {**p.__dict__, "cash_cents": p.cash_cents, "total_cents": p.total_cents}
+                for p in points
+            ]
+        )
+        return
+    shown = [p for p in points if not p.missing]
+    if len(shown) < len(points):
+        typer.echo(f"(se omiten {len(points) - len(shown)} meses sin datos de todas las cuentas)")
+    typer.echo(f"  {'Mes':<8} {'Efectivo':>14} {'Inversiones':>14} {'Total':>14}")
+    prev = None
+    for p in shown:
+        mark = "" if p.investments_basis == "mercado" else " ·"
+        delta = "" if prev is None else f"  {fmt_eur(p.total_cents - prev):>13}"
+        typer.echo(
+            f"  {p.month:<8} {fmt_eur(p.cash_cents):>14} {fmt_eur(p.investments_cents):>14}"
+            f"{mark:2} {fmt_eur(p.total_cents):>14}{delta}"
+        )
+        prev = p.total_cents
+    if any(p.investments_basis == "coste" for p in shown):
+        typer.echo(
+            "  · inversiones a coste: no hay valoración de esa semana (sube el PDF "
+            "«Extracto del patrimonio neto» a fin de mes)"
+        )
 
 
 # --------------------------------------------------------------------------- reglas

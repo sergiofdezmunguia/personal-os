@@ -26,6 +26,8 @@ PREFIXES = {
     "import": "imp",
     "transaction": "txn",
     "rule": "rul",
+    "trade": "trd",
+    "valuation": "val",
 }
 
 
