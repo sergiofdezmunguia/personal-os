@@ -311,3 +311,57 @@ def test_second_bank_query_after_constant_offset_is_accepted(svc):
     # días provisionales ya conocidos no deben compararse con su propio saldo anterior.
     res = query("-3", "eb2")
     assert res.rows_new == 0 and any("+15.00 €" in w for w in res.warnings)
+
+
+# ------------------------------------------------------------------ renovar la autorización
+
+
+def test_auth_flow_saves_session_and_keeps_the_others(tmp_path):
+    import json as _json
+
+    import httpx
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from personal_os.adapters.enablebanking import EnableBankingClient
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    (tmp_path / "app-ficticia.pem").write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))  # fmt: skip
+    (tmp_path / "sessions.json").write_text(_json.dumps(
+        {"traderepublic": {"session_id": "s-tr", "valid_until": "x", "accounts": ["a"]}}))  # fmt: skip
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path))
+        assert req.headers["Authorization"].startswith("Bearer ")
+        if req.url.path == "/application":
+            return httpx.Response(200, json={"redirect_urls": ["http://localhost:8765/"]})
+        if req.url.path == "/auth":
+            body = _json.loads(req.content)
+            assert body["aspsp"] == {"name": "Banco Ficticio", "country": "ES"}
+            assert body["redirect_url"] == "http://localhost:8765/"
+            return httpx.Response(200, json={"url": "https://banco.invalid/auth?x=1"})
+        if req.url.path == "/sessions":
+            assert _json.loads(req.content) == {"code": "c0de"}
+            return httpx.Response(200, json={"session_id": "s-new", "access": {
+                "valid_until": "2027-05-01T00:00:00Z"}, "accounts": [{"uid": "u1"}, {"uid": "u2"}]})  # fmt: skip
+        return httpx.Response(404)
+
+    client = EnableBankingClient(
+        tmp_path,
+        http=httpx.Client(base_url="https://api.invalid", transport=httpx.MockTransport(handler)),
+    )
+    redirect = client.redirect_urls()[0]
+    url = client.start_auth("Banco Ficticio", "ES", redirect_url=redirect,
+                            valid_until="2027-05-01T00:00:00Z", state="st")  # fmt: skip
+    assert url.startswith("https://banco.invalid/")
+    s = client.create_session("c0de")
+    client.save_session("santander", s)
+    saved = _json.loads((tmp_path / "sessions.json").read_text())
+    assert saved["santander"] == {"session_id": "s-new", "valid_until": "2027-05-01T00:00:00Z",
+                                  "accounts": ["u1", "u2"]}  # fmt: skip
+    assert saved["traderepublic"]["session_id"] == "s-tr"
+    assert (tmp_path / "sessions.json").stat().st_mode & 0o777 == 0o600
+    assert [a.alias for a in client.sessions()] == ["santander", "traderepublic"]

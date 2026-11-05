@@ -421,7 +421,7 @@ def bank_sync(application: App, *, days: int = BANK_DAYS, force: bool = False, c
         ):
             report.warnings.append(
                 f"{session.alias}: la autorización caduca el {session.valid_until[:10]};"
-                " renuévala (docs/finance.md, «Open banking»)"
+                f" renuévala con `pos finance bank-auth {session.alias}`"
             )
         accounts = [a for a in svc.list_accounts() if a.institution == institution]
         if len(accounts) != 1:
@@ -484,3 +484,16 @@ def _finance_inbox_report(application: App):
     for item in inbox.failed:
         report.warnings.append(f"{item.file_name}: {item.error}")
     return report
+
+
+def open_url(url: str) -> bool:
+    """Abre una URL en el navegador de Windows desde WSL (o el del sistema)."""
+    import shutil
+    import subprocess
+    import webbrowser
+
+    if shutil.which("cmd.exe"):
+        subprocess.run(["cmd.exe", "/c", "start", "", url.replace("&", "^&")], check=False,
+                       capture_output=True)  # fmt: skip
+        return True
+    return webbrowser.open(url)

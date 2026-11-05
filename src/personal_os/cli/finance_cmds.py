@@ -171,6 +171,101 @@ def bank_sync(
         raise typer.Exit(1)
 
 
+BANK_ASPSP = {"santander": ("Banco Santander", "ES"), "traderepublic": ("Trade Republic", "ES")}
+
+
+def _wait_for_code(redirect_url: str, timeout: int) -> str | None:
+    """Servidor de un solo uso en la dirección de retorno (p. ej. localhost:8765) que recoge el
+    `code` de la redirección del banco. None si no llega a tiempo."""
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    target = urlparse(redirect_url)
+    if target.hostname not in ("localhost", "127.0.0.1"):
+        return None
+    got: dict[str, str] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = parse_qs(urlparse(self.path).query)
+            ok = "code" in q
+            if ok:
+                got["code"] = q["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = "Autorizado. Ya puedes cerrar esta pestaña." if ok else "Falta el código."
+            self.wfile.write(f"<p style='font:18px system-ui'>{msg}</p>".encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("0.0.0.0", target.port or 80), Handler)
+    server.timeout = 2
+    stop = threading.Event()
+    threading.Timer(timeout, stop.set).start()
+    while not got and not stop.is_set():
+        server.handle_request()
+    server.server_close()
+    stop.set()
+    return got.get("code")
+
+
+@app.command("bank-auth")
+def bank_auth(
+    alias: str = typer.Argument(..., help="santander | traderepublic"),
+    days: int = typer.Option(
+        180, "--days", help="Días de validez pedidos (el banco puede dar menos)"
+    ),
+    aspsp: str | None = typer.Option(None, "--aspsp", help="Nombre del banco en Enable Banking"),
+    country: str | None = typer.Option(None, "--country"),
+) -> None:
+    """Renueva la autorización de open banking de un banco: abre el enlace del banco, recoge
+    la autorización y sustituye esa sesión en sessions.json (ADR 0010)."""
+    import secrets
+    from datetime import UTC
+
+    from personal_os.adapters.enablebanking import BankingError, EnableBankingClient
+
+    if alias not in BANK_ASPSP and not (aspsp and country):
+        fail(f"Banco desconocido {alias!r}: usa santander, traderepublic o --aspsp/--country")
+    name, ctry = BANK_ASPSP.get(alias, (aspsp, country))
+    name, ctry = aspsp or name, country or ctry
+    application = wiring.open_app()
+    try:
+        client = EnableBankingClient(application.config.config_dir / "enablebanking")
+        redirect = client.redirect_urls()[0]
+        until = (datetime.now(UTC) + timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000000+00:00"
+        )
+        url = client.start_auth(name, ctry, redirect_url=redirect, valid_until=until,
+                                state=secrets.token_urlsafe(12))  # fmt: skip
+        typer.echo("Abre este enlace, entra en tu banco y autoriza el acceso de solo lectura:")
+        typer.echo(url)
+        if wiring.open_url(url):
+            typer.echo("(abierto en el navegador)")
+        code = _wait_for_code(redirect, timeout=600)
+        if code is None:
+            pasted = typer.prompt("Pega aquí la dirección completa a la que te ha llevado el banco")
+            from urllib.parse import parse_qs, urlparse
+
+            code = (parse_qs(urlparse(pasted.strip()).query).get("code") or [None])[0]
+        if not code:
+            fail("No ha llegado el código de autorización")
+        session = client.create_session(code)
+        if not session.accounts:
+            fail("El banco no ha autorizado ninguna cuenta")
+        client.save_session(alias, session)
+    except (BankingError, IndexError, KeyError) as exc:
+        fail(f"No se pudo renovar: {exc}")
+    finally:
+        application.db.close()
+    typer.echo(
+        f"✓ {alias}: {len(session.accounts)} cuenta(s), válida hasta {session.valid_until[:10]}"
+    )
+
+
 @app.command("close")
 def close(
     month: str | None = typer.Argument(None, help="YYYY-MM (por defecto, el mes anterior)"),

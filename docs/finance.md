@@ -96,8 +96,10 @@ sin exportar nada. También a mano: `uv run pos finance bank-sync [--days 90] [-
   el saldo real) se acepta con un aviso y desde entonces manda el banco; si varía, faltan o
   sobran movimientos y no se importa nada.
 - **Renovar la autorización**: caduca (Santander ~180 días, TR ~90). `pos sync` avisa 14
-  días antes. Se renueva repitiendo la autorización en Enable Banking (enlace del banco →
-  `code` → `POST /sessions`) y sustituyendo esa sesión en `sessions.json`.
+  días antes. `uv run pos finance bank-auth santander` (o `traderepublic`) abre el banco en el
+  navegador, recoge la autorización en la dirección de retorno de la aplicación
+  (`localhost:8765`) y sustituye esa sesión en `sessions.json`. Si el navegador no llega al
+  PC, pega la dirección a la que te llevó el banco cuando lo pida.
 
 ### Comercio de Apple Pay
 
