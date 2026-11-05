@@ -99,6 +99,15 @@ sin exportar nada. También a mano: `uv run pos finance bank-sync [--days 90] [-
   días antes. Se renueva repitiendo la autorización en Enable Banking (enlace del banco →
   `code` → `POST /sessions`) y sustituyendo esa sesión en `sessions.json`.
 
+### Comercio de Apple Pay
+
+Trade Republic no manda concepto por open banking. La automatización «Transacción» de
+Atajos escribe cada pago con Apple Pay en `<bandeja>/applepay/pagos.txt`
+(`instante; importe €; comercio; tarjeta`). En cada `pos sync`, los movimientos «sin
+concepto» con el mismo importe y fecha contable entre el día del pago y 3 días después
+toman el nombre del comercio (el más cercano en fecha) y pasan por las reglas. Un pago ya
+usado no se vuelve a asignar. El fichero nunca se modifica ni se borra.
+
 ## Inversiones y patrimonio
 
 ```bash
