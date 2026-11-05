@@ -157,22 +157,34 @@ class Budget:
     cap_cents: int  # tope del satélite
     invested_cents: int  # coste de lo que hay en el satélite
     per_trade_cents: int
+    emergency_blocks: bool = True
+    monthly_expense_cents: int = 0
 
     @property
     def free_cash_cents(self) -> int:
-        return self.cash_cents - self.emergency_cents - self.plan_cents
+        """Efectivo que se puede usar: sin el plan del mes y, si bloquea, sin el colchón."""
+        reserve = self.emergency_cents if self.emergency_blocks else 0
+        return self.cash_cents - reserve - self.plan_cents
 
     @property
     def available_cents(self) -> int:
         return max(0, min(self.cap_cents - self.invested_cents, self.free_cash_cents))
+
+    def months_after(self, amount_cents: int) -> float | None:
+        """Meses de gasto que cubriría el efectivo (tras el plan) después de gastar `amount`."""
+        if not self.monthly_expense_cents:
+            return None
+        return (self.cash_cents - self.plan_cents - amount_cents) / self.monthly_expense_cents
 
     @property
     def why_zero(self) -> str | None:
         if self.available_cents > 0:
             return None
         if self.free_cash_cents <= 0:
-            return ("Tu efectivo no cubre el colchón de emergencia más el plan del mes: primero "
-                    "el colchón.")  # fmt: skip
+            if self.emergency_blocks:
+                return ("Tu efectivo no cubre el colchón de emergencia más el plan del mes: primero "
+                        "el colchón.")  # fmt: skip
+            return "No queda efectivo libre tras el plan del mes."
         return "El satélite ya está en su tope."
 
 
@@ -236,6 +248,8 @@ def budget(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int) 
         cap_cents=cap,
         invested_cents=invested,
         per_trade_cents=round(cap * cfg.max_trade / 100),
+        emergency_blocks=cfg.emergency_blocks,
+        monthly_expense_cents=monthly_expense_cents,
     )
 
 
@@ -254,6 +268,13 @@ class Idea:
     stop: Decimal | None = None
     target: Decimal | None = None
     warnings: list[str] = field(default_factory=list)
+
+
+def score(s: Signal) -> float:
+    """Puntuación de una oportunidad (más alta = mejor): caída desde máximos, con premio a la
+    tendencia sana y a la sobreventa (RSI bajo). Solo ordena; no cambia las reglas."""
+    rsi_bonus = max(0.0, 50 - (s.rsi14 if s.rsi14 is not None else 50)) / 5
+    return s.drawdown + (10 if s.healthy_trend else -10) + rsi_bonus
 
 
 @dataclass(frozen=True)
@@ -341,7 +362,7 @@ def ideas(
         elif g <= -cfg.stop:
             out.append(Idea("vender", p.isin, p.name, p.symbol, price, f"Pierdes un {-g:.0f} %: stop alcanzado.", p.value_cents))  # fmt: skip
     room = budget_.available_cents
-    for s in sorted(sigs, key=lambda s: -s.drawdown):
+    for s in sorted(sigs, key=lambda s: -score(s)):
         if s.isin in core or s.drawdown < cfg.dip:
             continue
         warn = []
@@ -365,6 +386,13 @@ def ideas(
             if kind == "vigilar":
                 warn.append("Sin presupuesto en el satélite ahora mismo.")
             room -= amount if kind == "comprar" else 0
+            if kind == "comprar" and not cfg.emergency_blocks:
+                months = budget_.months_after(budget_.available_cents - room)  # acumulado
+                if months is not None and months < cfg.emergency_months:
+                    warn.append(
+                        f"Sale de tu colchón: tras esta compra (y las de arriba) te quedarían {months:.1f} meses "
+                        f"de gasto en efectivo (tu objetivo son {cfg.emergency_months:g})."
+                    )
             out.append(Idea(kind, s.isin, s.name, s.symbol, s.price,
                             reason + " · tendencia de fondo sana", amount if kind == "comprar" else 0,
                             stop, target, warn))  # fmt: skip
@@ -432,12 +460,24 @@ def versus(svc: FinanceService, cfg, *, today: str) -> Versus | None:
 class Overview:
     today: str
     budget: Budget
-    ideas: list[Idea]
+    ideas: list[Idea]  # ventas primero; después compras/vigilar de mejor a peor puntuación
     signals: list[Signal]
     positions: list[Position]
     taxes: Taxes
     versus: Versus | None
     harvest: list[Position]  # en noviembre y diciembre: pérdidas que compensarían ganancias
+    top_k: int = 3
+
+    @property
+    def top(self) -> list[Idea]:
+        """Las ventas (siempre) y las `top_k` mejores oportunidades."""
+        sells = [i for i in self.ideas if i.kind == "vender"]
+        rest = [i for i in self.ideas if i.kind != "vender"]
+        return sells + rest[: self.top_k]
+
+    @property
+    def others(self) -> list[Idea]:
+        return [i for i in self.ideas if i.kind != "vender"][self.top_k :]
 
 
 def overview(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int) -> Overview:
@@ -449,7 +489,11 @@ def overview(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int
     if today[5:7] in ("11", "12") and t.base_cents > 0:
         harvest = [p for p in pos if p.value_cents is not None and p.value_cents < p.cost_cents
                    and p.cost_cents >= MIN_POSITION_CENTS]  # fmt: skip
-    return Overview(today, b, ideas_, sigs, pos, t, versus(svc, cfg, today=today), harvest)
+    order = {"vender": 0, "comprar": 1, "vigilar": 1}
+    ideas_ = sorted(ideas_, key=lambda i: order[i.kind])  # estable: conserva la puntuación
+    return Overview(
+        today, b, ideas_, sigs, pos, t, versus(svc, cfg, today=today), harvest, cfg.top_k
+    )
 
 
 @dataclass(frozen=True)

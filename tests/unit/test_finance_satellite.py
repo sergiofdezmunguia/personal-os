@@ -132,3 +132,24 @@ def test_overview_and_notice(prices, clock):
     o = satellite.overview(prices, CFG, today=TODAY, monthly_expense_cents=1000)
     got = notices.ideas(o, datetime(2026, 10, 5, 8, 0, tzinfo=ZoneInfo("Europe/Madrid")))
     assert all(n["id"].startswith("idea:") and ":2026-W41" in n["id"] for n in got)
+
+
+def test_emergency_only_warns_when_not_blocking(prices, monkeypatch):
+    import dataclasses
+
+    monkeypatch.setattr(satellite, "MIN_TRADE_CENTS", 1)  # los importes inventados son pequeños
+    cfg = dataclasses.replace(CFG, emergency_blocks=False)
+    b = satellite.budget(prices, cfg, today=TODAY, monthly_expense_cents=10_000_000)
+    assert b.available_cents > 0  # el colchón ya no bloquea
+    ideas, _ = satellite.ideas(prices, cfg, today=TODAY, budget_=b)
+    buy = next(i for i in ideas if i.kind == "comprar")
+    assert any("Sale de tu colchón" in w for w in buy.warnings)
+
+
+def test_top_k_keeps_sells_and_best_scores(prices):
+    import dataclasses
+
+    o = satellite.overview(prices, dataclasses.replace(CFG, top_k=1), today=TODAY,
+                           monthly_expense_cents=1000)  # fmt: skip
+    assert [i.name for i in o.top] == ["FAKE Corp"]  # tendencia sana puntúa por encima
+    assert [i.name for i in o.others] == ["FAKE Cayendo"]

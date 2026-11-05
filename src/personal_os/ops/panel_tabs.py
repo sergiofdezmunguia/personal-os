@@ -326,8 +326,7 @@ def tab_ideas(x: Extras) -> str:
         <div class="fact"><div class="k">Efectivo libre</div><div class="v">{eur(b.free_cash_cents)}</div><div class="n">tras colchón {eur(b.emergency_cents)} y plan {eur(b.plan_cents)}</div></div>
       </div>{why}</div>"""]  # fmt: skip
     cards = []
-    order = {"vender": 0, "comprar": 1, "vigilar": 2}
-    for i in sorted(o.ideas, key=lambda i: order[i.kind]):
+    for n, i in enumerate(o.top, 1):
         cls, label = KIND[i.kind]
         amount = (
             f'<div class="big-line"><b>{eur(i.amount_cents)}</b> propuestos</div>'
@@ -342,7 +341,8 @@ def tab_ideas(x: Extras) -> str:
             per = "" if i.amount_cents else f" (por cada {eur(out.amount_cents)})"
             levels += (f'<p class="small0">Si llega al objetivo: <b class="up-good">{eur(out.gain_cents, sign=True)}</b> netos'
                        f' · si salta el stop: <b class="down-bad">{eur(-out.loss_cents)}</b>{per}</p>')  # fmt: skip
-        cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{esc(i.name)}</h3>
+        rank = f"{n}. " if i.kind != "vender" else ""
+        cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{rank}{esc(i.name)}</h3>
           <span class="pill {cls}">{label}</span></div>
           <p class="hero-of">{_price(i.price)} · {esc(i.reason)}</p>{amount}{levels}{warns}</div>""")  # fmt: skip
     if not cards:
@@ -350,6 +350,15 @@ def tab_ideas(x: Extras) -> str:
             '<div class="panel"><p class="muted">Nada cumple las reglas hoy. Lo normal: la mayoría de los días no hay que hacer nada.</p></div>'
         )
     parts += cards
+    if o.others:
+        more = "".join(
+            f'<div class="li"><span>{esc(i.name)}<small>{esc(i.reason)}</small></span>'
+            f'<span class="num">{KIND[i.kind][1]}</span></div>'
+            for i in o.others
+        )
+        parts.append(
+            f'<div class="panel"><details><summary>Otras {len(o.others)} con caída (fuera del top {o.top_k})</summary><div class="list">{more}</div></details></div>'
+        )
     rows = "".join(
         f'<div class="li"><span>{esc(s.name)}<small>RSI {f"{s.rsi14:.0f}" if s.rsi14 is not None else "—"} · '
         f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200</small></span>"
@@ -357,7 +366,7 @@ def tab_ideas(x: Extras) -> str:
         for s in sorted(o.signals, key=lambda s: -s.drawdown)
     )
     parts.append(
-        f'<div class="panel"><h3>Lista de seguimiento · caída desde máximos</h3><div class="list">{rows}</div></div>'
+        f'<div class="panel"><details><summary>Toda la lista de seguimiento · caída desde máximos</summary><div class="list">{rows}</div></details></div>'
     )
     t = o.taxes
     harvest = "".join(
