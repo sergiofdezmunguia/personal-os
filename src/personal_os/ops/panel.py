@@ -20,7 +20,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from personal_os.finance import insights, satellite
+from personal_os.finance import backtest, insights, satellite
 from personal_os.finance.insights import CUT_SHARE, Panel
 from personal_os.finance.models import fmt_eur
 from personal_os.ops import notices, panel_tabs
@@ -652,6 +652,7 @@ def generate(application) -> PanelResult:
         svc, panel, today=today,
         alerts=[n for n in notice_list if n["kind"] == "alerta"],
         health_text=_read_health(application.config), sat=sat,
+        test=backtest.from_db(svc, sat_cfg, today=today) if sat_cfg.enabled else None,
     )  # fmt: skip
     page = render(panel, generated_at=now.strftime("%d/%m/%Y %H:%M"), extras=extras)
     folder = panel_dir(application.config)

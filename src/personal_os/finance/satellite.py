@@ -450,3 +450,24 @@ def overview(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int
         harvest = [p for p in pos if p.value_cents is not None and p.value_cents < p.cost_cents
                    and p.cost_cents >= MIN_POSITION_CENTS]  # fmt: skip
     return Overview(today, b, ideas_, sigs, pos, t, versus(svc, cfg, today=today), harvest)
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """Qué pasaría con `amount_cents` si se llega al objetivo o al stop, tras comisiones
+    (1 € al comprar y al vender) y el IRPF de la ganancia (19 %, primer tramo)."""
+
+    amount_cents: int
+    gain_cents: int  # neto si llega al objetivo
+    loss_cents: int  # pérdida si salta el stop (positiva)
+
+
+def outcome(idea: Idea, amount_cents: int | None = None) -> Outcome | None:
+    if idea.stop is None or idea.target is None or not idea.price:
+        return None
+    amount = amount_cents or idea.amount_cents or 100000
+    fees = 200
+    gross = round(amount * float(idea.target / idea.price - 1))
+    gain = round((gross - fees) * (1 - TAX_BRACKETS[0][1])) if gross > fees else gross - fees
+    loss = round(amount * float(1 - idea.stop / idea.price)) + fees
+    return Outcome(amount, gain, loss)

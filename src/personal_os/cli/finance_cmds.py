@@ -547,6 +547,53 @@ def ideas_cmd() -> None:
     typer.echo("Ideas por reglas, no recomendaciones: las órdenes las das tú en tu bróker.")
 
 
+@app.command("backtest")
+def backtest_cmd(
+    dip: float | None = typer.Option(None, "--dip", help="% de caída para entrar"),
+    stop: float | None = typer.Option(None, "--stop", help="% de pérdida para salir"),
+    take_profit: float | None = typer.Option(None, "--take-profit", help="% de ganancia máxima"),
+    years: int = typer.Option(5, "--years"),
+    amount: float = typer.Option(1000, "--amount", help="€ por operación"),
+) -> None:
+    """Prueba histórica de las reglas del satélite sobre la lista de seguimiento (ADR 0014).
+    Sin las opciones usa las de config.toml; con ellas, prueba variantes sin cambiar nada."""
+    import dataclasses
+
+    from personal_os.finance import backtest
+
+    application = wiring.open_app()
+    try:
+        cfg = application.config.finance.satellite
+        if not cfg.enabled:
+            fail("Sin lista de seguimiento en [finance.satellite]")
+        changes = {
+            k: v
+            for k, v in (("dip", dip), ("stop", stop), ("take_profit", take_profit))
+            if v is not None
+        }
+        cfg = dataclasses.replace(cfg, **changes)
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        r = backtest.from_db(wiring.finance_service(application), cfg, today=today, years=years,
+                             trade_cents=round(amount * 100))  # fmt: skip
+    finally:
+        application.db.close()
+    typer.echo(
+        f"Reglas: caída ≥ {cfg.dip:g} % · stop −{cfg.stop:g} % · objetivo ≤ +{cfg.take_profit:g} % · {years} años"
+    )
+    for t in r.trades:
+        typer.echo(f"  {t.entry_day} → {t.exit_day}  {t.symbol:<9} {t.reason:<9} {fmt_eur(t.pnl_cents):>12}"
+                   f"   índice {fmt_eur(t.bench_pnl_cents) if t.bench_pnl_cents is not None else '—':>12}")  # fmt: skip
+    if r.closed:
+        typer.echo(f"{len(r.trades)} operaciones · aciertos {r.win_rate:.0f} % · media {r.avg_pct:+.1f} % · "
+                   f"{r.avg_days:.0f} sesiones de media")  # fmt: skip
+    bench = fmt_eur(r.bench_pnl_cents) if r.bench_pnl_cents is not None else "—"
+    typer.echo(
+        f"Resultado {fmt_eur(r.pnl_cents)} ({fmt_eur(r.net_cents)} tras IRPF) · mismo dinero en el índice {bench}"
+    )
+    typer.echo("Ojo: la lista se eligió sabiendo cómo les fue; el pasado no garantiza nada.")
+
+
 @app.command("recurring")
 def recurring(
     all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),

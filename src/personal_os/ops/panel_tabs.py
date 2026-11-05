@@ -14,7 +14,7 @@ import html
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from personal_os.finance import analyst, investments, satellite
+from personal_os.finance import analyst, backtest, investments, satellite
 from personal_os.finance.insights import Panel
 from personal_os.habits import health
 
@@ -53,6 +53,7 @@ class Extras:
     habits: health.Summary | None = None
     habits_file: bool = False
     satellite: satellite.Overview | None = None
+    backtest: backtest.Result | None = None
 
 
 def build_extras(
@@ -63,6 +64,7 @@ def build_extras(
     alerts: list[dict],
     health_text: str | None,
     sat: satellite.Overview | None = None,
+    test: backtest.Result | None = None,
 ) -> Extras:
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     summary = None
@@ -78,6 +80,7 @@ def build_extras(
         habits=summary,
         habits_file=health_text is not None,
         satellite=sat,
+        backtest=test,
     )
 
 
@@ -334,6 +337,11 @@ def tab_ideas(x: Extras) -> str:
         levels = (f'<p class="muted small0">Stop {_price(i.stop)} · objetivo {_price(i.target)}</p>'
                   if i.stop and i.kind != "vender" else "")  # fmt: skip
         warns = "".join(f'<p class="small0 warnline">⚠ {esc(w)}</p>' for w in i.warnings)
+        out = satellite.outcome(i) if i.kind != "vender" else None
+        if out:
+            per = "" if i.amount_cents else f" (por cada {eur(out.amount_cents)})"
+            levels += (f'<p class="small0">Si llega al objetivo: <b class="up-good">{eur(out.gain_cents, sign=True)}</b> netos'
+                       f' · si salta el stop: <b class="down-bad">{eur(-out.loss_cents)}</b>{per}</p>')  # fmt: skip
         cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{esc(i.name)}</h3>
           <span class="pill {cls}">{label}</span></div>
           <p class="hero-of">{_price(i.price)} · {esc(i.reason)}</p>{amount}{levels}{warns}</div>""")  # fmt: skip
@@ -378,7 +386,7 @@ CSS = """
 html.js .view{display:none}html.js .view.on{display:grid;gap:14px}
 html.js .tabs{display:block;position:fixed;left:0;right:0;bottom:0;z-index:20;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--ring);padding:6px max(8px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
 .tabs nav{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
-.warnline{color:var(--warn-ink);margin:4px 0 0}.idea .hero-of{margin-top:4px}
+.warnline{color:var(--warn-ink);margin:4px 0 0}.up-good{color:var(--good-ink)}.down-bad{color:var(--warn-ink)}.idea .hero-of{margin-top:4px}
 .tabs button{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;color:var(--muted);background:none;border:0;font:500 11.5px var(--ui);cursor:pointer}
 .tabs button span.i{font-size:20px;line-height:1}
 .tabs button[aria-current="page"]{color:var(--s1)}
