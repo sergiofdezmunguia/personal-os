@@ -739,6 +739,34 @@ class FinanceService:
             self._apply_rules(ctx, [t for t, _ in changed])
         return len(changed)
 
+    def name_placeholder(
+        self, ctx: ChangeContext, txn_id: str, merchant: str, *, placeholders: Iterable[str]
+    ) -> str:
+        """Pone el comercio a un movimiento que el banco dejó sin concepto (p. ej. una compra
+        online cuyo recibo está en el correo). Solo sobre esos: nunca pisa un concepto real.
+        Devuelve la descripción nueva y aplica las reglas."""
+        row = self.db.one("SELECT description FROM fin_transactions WHERE id = ?", (txn_id,))
+        if row is None:
+            raise NotFound(f"No existe el movimiento {txn_id}")
+        if row["description"] not in set(placeholders):
+            raise FinanceError(
+                f"{txn_id} ya tiene concepto del banco; solo se nombran los que no lo tienen"
+            )
+        name = mask_merchant(" ".join(merchant.split()))[:80]
+        if not name:
+            raise FinanceError("Falta el nombre del comercio")
+        with self.db.transaction():
+            self.db.execute(
+                "UPDATE fin_transactions SET description = ?, updated_at = ? WHERE id = ?",
+                (name, self._now(), txn_id),
+            )
+            self.events.record(
+                ctx, "finance.transactions.enriched", "fin_transaction", txn_id,
+                {"source": ctx.actor, "count": 1},
+            )  # fmt: skip
+            self._apply_rules(ctx, [txn_id])
+        return name
+
     def _payment_consumed(self, p, day: date, max_days: int, used: set[str]) -> bool:
         """¿Este pago ya puso su comercio en un movimiento (pasada anterior)? Mismo importe,
         misma ventana y la descripción es ese comercio. Ese movimiento queda reservado."""

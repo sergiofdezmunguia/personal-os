@@ -13,6 +13,7 @@ from personal_os import bootstrap as wiring
 from personal_os.cli.output import echo_json, fail
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
+from personal_os.finance import analyst
 from personal_os.finance import investments as inv
 from personal_os.finance.importers import StatementError, describe, detect
 from personal_os.finance.investments import import_document
@@ -168,6 +169,101 @@ def bank_sync(
         typer.secho(f"  error: {e}", fg=typer.colors.RED)
     if report.errors:
         raise typer.Exit(1)
+
+
+BANK_ASPSP = {"santander": ("Banco Santander", "ES"), "traderepublic": ("Trade Republic", "ES")}
+
+
+def _wait_for_code(redirect_url: str, timeout: int) -> str | None:
+    """Servidor de un solo uso en la dirección de retorno (p. ej. localhost:8765) que recoge el
+    `code` de la redirección del banco. None si no llega a tiempo."""
+    import http.server
+    import threading
+    from urllib.parse import parse_qs, urlparse
+
+    target = urlparse(redirect_url)
+    if target.hostname not in ("localhost", "127.0.0.1"):
+        return None
+    got: dict[str, str] = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = parse_qs(urlparse(self.path).query)
+            ok = "code" in q
+            if ok:
+                got["code"] = q["code"][0]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            msg = "Autorizado. Ya puedes cerrar esta pestaña." if ok else "Falta el código."
+            self.wfile.write(f"<p style='font:18px system-ui'>{msg}</p>".encode())
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("0.0.0.0", target.port or 80), Handler)
+    server.timeout = 2
+    stop = threading.Event()
+    threading.Timer(timeout, stop.set).start()
+    while not got and not stop.is_set():
+        server.handle_request()
+    server.server_close()
+    stop.set()
+    return got.get("code")
+
+
+@app.command("bank-auth")
+def bank_auth(
+    alias: str = typer.Argument(..., help="santander | traderepublic"),
+    days: int = typer.Option(
+        180, "--days", help="Días de validez pedidos (el banco puede dar menos)"
+    ),
+    aspsp: str | None = typer.Option(None, "--aspsp", help="Nombre del banco en Enable Banking"),
+    country: str | None = typer.Option(None, "--country"),
+) -> None:
+    """Renueva la autorización de open banking de un banco: abre el enlace del banco, recoge
+    la autorización y sustituye esa sesión en sessions.json (ADR 0010)."""
+    import secrets
+    from datetime import UTC
+
+    from personal_os.adapters.enablebanking import BankingError, EnableBankingClient
+
+    if alias not in BANK_ASPSP and not (aspsp and country):
+        fail(f"Banco desconocido {alias!r}: usa santander, traderepublic o --aspsp/--country")
+    name, ctry = BANK_ASPSP.get(alias, (aspsp, country))
+    name, ctry = aspsp or name, country or ctry
+    application = wiring.open_app()
+    try:
+        client = EnableBankingClient(application.config.config_dir / "enablebanking")
+        redirect = client.redirect_urls()[0]
+        until = (datetime.now(UTC) + timedelta(days=days)).strftime(
+            "%Y-%m-%dT%H:%M:%S.000000+00:00"
+        )
+        url = client.start_auth(name, ctry, redirect_url=redirect, valid_until=until,
+                                state=secrets.token_urlsafe(12))  # fmt: skip
+        typer.echo("Abre este enlace, entra en tu banco y autoriza el acceso de solo lectura:")
+        typer.echo(url)
+        if wiring.open_url(url):
+            typer.echo("(abierto en el navegador)")
+        code = _wait_for_code(redirect, timeout=600)
+        if code is None:
+            pasted = typer.prompt("Pega aquí la dirección completa a la que te ha llevado el banco")
+            from urllib.parse import parse_qs, urlparse
+
+            code = (parse_qs(urlparse(pasted.strip()).query).get("code") or [None])[0]
+        if not code:
+            fail("No ha llegado el código de autorización")
+        session = client.create_session(code)
+        if not session.accounts:
+            fail("El banco no ha autorizado ninguna cuenta")
+        client.save_session(alias, session)
+    except (BankingError, IndexError, KeyError) as exc:
+        fail(f"No se pudo renovar: {exc}")
+    finally:
+        application.db.close()
+    typer.echo(
+        f"✓ {alias}: {len(session.accounts)} cuenta(s), válida hasta {session.valid_until[:10]}"
+    )
 
 
 @app.command("close")
@@ -369,6 +465,103 @@ def category_add(
     except FinanceError as exc:
         fail(str(exc))
     typer.echo(f"✓ {c.slug} ({c.kind}{', dentro de ' + c.parent if c.parent else ''})")
+
+
+def _today() -> str:
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        return application.clock.now().astimezone(tz).date().isoformat()
+    finally:
+        application.db.close()
+
+
+@app.command("prices")
+def prices(
+    force: bool = typer.Option(False, "--force", help="Descarga aunque se hiciera hace poco"),
+) -> None:
+    """Descarga el último cierre de cada fondo/ETF en cartera (justETF/Yahoo) y muestra la
+    cartera a precio de hoy (ADR 0012)."""
+    application = wiring.open_app()
+    try:
+        report = wiring.update_prices(application, force=force)
+        if report is not None:
+            for e in report.errors:
+                typer.echo(f"  aviso: {e}")
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        for lp in inv.live_portfolios(svc, today=today):
+            typer.echo(f"{lp.label}: {fmt_eur(lp.value_cents)} · coste {fmt_eur(lp.cost_cents)}"
+                       f" · {fmt_eur(lp.gain_cents)} ({lp.gain_pct} %)"
+                       f" · última sesión {fmt_eur(lp.day_change_cents)} · cierre {lp.as_of}")  # fmt: skip
+            for p in lp.positions:
+                val = fmt_eur(p.value_cents) if p.value_cents is not None else "sin precio"
+                typer.echo(f"  {p.name[:40]:<40} {val:>14}  {p.price_date or ''}")
+    finally:
+        application.db.close()
+
+
+@app.command("recurring")
+def recurring(
+    all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cobros recurrentes (suscripciones, cuotas, recibos): coste al mes, próximo cobro y
+    subidas de precio. Detectados por patrón, sin reglas que mantener."""
+    today = _today()
+    items = analyst.recurring(_svc(), today=today, include_inactive=all_)
+    if as_json:
+        echo_json([
+            {**r.__dict__, "monthly_cents": r.monthly_cents, "rise_cents": r.rise_cents,
+             "variable": r.variable}
+            for r in items
+        ])  # fmt: skip
+        return
+    if not items:
+        typer.echo("No se detectan cobros recurrentes.")
+        return
+    total = 0
+    for r in items:
+        if r.active:
+            total += r.monthly_cents
+        state = "" if r.active else "  (ya no cobra)"
+        rise = f"  ↑ antes {fmt_eur(r.previous_cents)}" if r.previous_cents else ""
+        nxt = f"próximo ~{r.next_day}" if r.next_day else f"último {r.last_day}"
+        amount = ("≈" if r.variable else "") + fmt_eur(r.last_cents)
+        typer.echo(
+            f"{r.merchant[:28]:<28} {r.cadence:<8} {amount:>12}  {nxt}  [{r.category or '·'}]"
+            f"{rise}{state}"
+        )
+    typer.echo(f"Total activo: {fmt_eur(total)} al mes ({fmt_eur(total * 12)} al año)")
+
+
+@app.command("week")
+def week(
+    last_day: str | None = typer.Argument(None, help="Último día (YYYY-MM-DD); por defecto hoy"),
+) -> None:
+    """Resumen de 7 días frente a una semana habitual, con subidas y posibles duplicados."""
+    svc = _svc()
+    day = last_day or _today()
+    w = analyst.week(svc, last_day=day)
+    s = w.spend
+    typer.echo(
+        f"Semana {s.first_day} → {s.last_day}: {fmt_eur(s.expense_cents)} en {s.payments} pagos"
+    )
+    if w.habit_cents:
+        typer.echo(
+            f"  Habitual: {fmt_eur(w.habit_cents)} ({fmt_eur(s.expense_cents - w.habit_cents)})"
+        )
+    for name, cents in s.by_category[:5]:
+        typer.echo(f"  {name[:24]:<24} {fmt_eur(cents):>12}")
+    if s.uncategorized:
+        typer.echo(f"  Sin categoría: {s.uncategorized} mov. ({fmt_eur(s.uncategorized_cents)})")
+    for r in w.rises:
+        typer.echo(f"  ↑ {r.merchant}: {fmt_eur(r.previous_cents)} → {fmt_eur(r.last_cents)}")
+    for r in w.new_recurring:
+        typer.echo(f"  Nuevo recurrente: {r.merchant} ({fmt_eur(r.last_cents)} al mes)")
+    for d in analyst.duplicates(svc, today=day):
+        typer.echo(f"  ¿Duplicado? {d.count} × {fmt_eur(d.cents)} en {d.merchant} el {d.day}")
 
 
 @app.command("summary")

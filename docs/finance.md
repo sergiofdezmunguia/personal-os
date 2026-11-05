@@ -96,8 +96,10 @@ sin exportar nada. También a mano: `uv run pos finance bank-sync [--days 90] [-
   el saldo real) se acepta con un aviso y desde entonces manda el banco; si varía, faltan o
   sobran movimientos y no se importa nada.
 - **Renovar la autorización**: caduca (Santander ~180 días, TR ~90). `pos sync` avisa 14
-  días antes. Se renueva repitiendo la autorización en Enable Banking (enlace del banco →
-  `code` → `POST /sessions`) y sustituyendo esa sesión en `sessions.json`.
+  días antes. `uv run pos finance bank-auth santander` (o `traderepublic`) abre el banco en el
+  navegador, recoge la autorización en la dirección de retorno de la aplicación
+  (`localhost:8765`) y sustituye esa sesión en `sessions.json`. Si el navegador no llega al
+  PC, pega la dirección a la que te llevó el banco cuando lo pida.
 
 ### Comercio de Apple Pay
 
@@ -182,3 +184,23 @@ lo que tú pusiste a mano).
 
 En el iPhone: Scriptable → **Personal OS Panel** (ver `docs/setup/iphone.md`). Definiciones
 en ADR 0009.
+
+
+## Analista de gastos y avisos
+
+- `pos finance recurring [--all]`: suscripciones, cuotas y recibos detectados por patrón, con
+  coste al mes, próximo cobro y subidas de precio. `pos finance week [AAAA-MM-DD]`: 7 días
+  frente a una semana habitual.
+- En cada sync el PC deja `panel/avisos.json`; el iPhone los muestra como notificación al
+  ejecutar «Personal OS Sync» (buenos días con lo gastado ayer y la agenda, resumen del
+  domingo, subidas de cuotas, cobros recurrentes nuevos, posibles duplicados, renovaciones
+  anuales). Tocar el aviso abre el panel. Detalle en ADR 0011.
+- Compras online sin concepto: en el cierre de mes, Claude busca el recibo en Gmail y les pone
+  nombre con `name_unlabeled_transaction` (solo a movimientos sin concepto).
+
+## Precio diario de la cartera
+
+`pos sync` descarga el último cierre de cada fondo/ETF en cartera (justETF; Yahoo de
+respaldo) como mucho cada 6 h. `pos finance prices [--force]` lo hace a mano y muestra la
+cartera a precio de hoy. El panel, el widget y el aviso de buenos días usan ese valor. El PDF
+mensual de TR sigue siendo la referencia de cierre. Detalle en ADR 0012.

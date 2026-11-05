@@ -11,6 +11,7 @@ Solo habla HTTP: devuelve el JSON del banco tal cual, sin interpretarlo (eso lo 
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import time
 from dataclasses import dataclass
@@ -91,13 +92,64 @@ class EnableBankingClient:
         if r.status_code in (401, 403):
             raise BankingError(
                 f"El banco rechaza el acceso (HTTP {r.status_code}): la autorización ha "
-                "caducado o se ha revocado; renuévala (docs/finance.md, «Open banking»)"
+                "caducado o se ha revocado; renuévala con `pos finance bank-auth <banco>`"
             )
         if r.status_code == 429:
             raise BankingError("Límite de consultas del banco alcanzado (HTTP 429); prueba mañana")
         if r.status_code >= 400:
             raise BankingError(f"Enable Banking respondió HTTP {r.status_code} en {path}")
         return r.json()
+
+    def _post(self, path: str, body: dict) -> dict:
+        try:
+            r = self._http.post(path, json=body, headers={"Authorization": f"Bearer {self._jwt()}"})
+        except httpx.HTTPError as exc:
+            raise BankingError(f"Sin conexión con Enable Banking ({type(exc).__name__})") from exc
+        if r.status_code >= 400:
+            detail = ""
+            with contextlib.suppress(ValueError):
+                detail = str(r.json().get("message") or r.json().get("error") or "")[:200]
+            raise BankingError(
+                f"Enable Banking respondió HTTP {r.status_code} en {path} {detail}".strip()
+            )
+        return r.json()
+
+    # --- autorización (renovar una sesión) ---------------------------------------------
+    def redirect_urls(self) -> list[str]:
+        """Direcciones de retorno registradas en la aplicación de Enable Banking."""
+        return list(self._get("/application").get("redirect_urls", []))
+
+    def start_auth(self, aspsp: str, country: str, *, redirect_url: str, valid_until: str,
+                   state: str) -> str:  # fmt: skip
+        """Pide el enlace de autorización del banco. Devuelve la URL que abre el usuario."""
+        body = {
+            "access": {"valid_until": valid_until},
+            "aspsp": {"name": aspsp, "country": country},
+            "state": state,
+            "redirect_url": redirect_url,
+            "psu_type": "personal",
+        }
+        return self._post("/auth", body)["url"]
+
+    def create_session(self, code: str) -> BankSession:
+        """Canjea el `code` de la redirección por una sesión (cuentas autorizadas)."""
+        d = self._post("/sessions", {"code": code})
+        return BankSession(
+            alias="",
+            session_id=d["session_id"],
+            valid_until=(d.get("access") or {}).get("valid_until", ""),
+            accounts=tuple(a["uid"] for a in d.get("accounts", []) if a.get("uid")),
+        )
+
+    def save_session(self, alias: str, session: BankSession) -> None:
+        """Sustituye la sesión `alias` en sessions.json (0600), conservando las demás."""
+        raw = json.loads(self.sessions_path.read_text()) if self.sessions_path.exists() else {}
+        raw[alias] = {"session_id": session.session_id, "valid_until": session.valid_until,
+                      "accounts": list(session.accounts)}  # fmt: skip
+        tmp = self.sessions_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(raw, indent=2))
+        tmp.chmod(0o600)
+        tmp.replace(self.sessions_path)
 
     def balances(self, account_uid: str) -> list[dict]:
         return self._get(f"/accounts/{account_uid}/balances").get("balances", [])

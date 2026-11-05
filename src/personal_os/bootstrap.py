@@ -36,6 +36,8 @@ PANEL_VIEWER_NAME = "Personal OS Panel.js"  # abre el panel en el iPhone (visor 
 WIDGET_SOURCE = BRIDGE_SOURCE.with_name("personal-os-widget.js")
 WIDGET_NAME = "Personal OS Widget.js"  # widget de pantalla de inicio (dinero + citas + tareas)
 APUNTAR_SOURCE = BRIDGE_SOURCE.with_name("apuntar.js")
+AVISOS_SOURCE = BRIDGE_SOURCE.with_name("avisos.js")
+AVISOS_NAME = "Personal OS Avisos.js"  # avisos del PC como notificaciones (lo llama el sync)
 APUNTAR_NAME = "Apuntar.js"  # frase en español → evento del Calendario del iPhone (Siri/Atajos)
 
 
@@ -283,7 +285,49 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
             report = applepay_enrich(application)
             if report is not None:
                 outcome.reports.append(report)
+            report = update_prices(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+PRICES_MIN_HOURS = 6  # como mucho una descarga de cotizaciones cada 6 h
+
+
+def update_prices(application: App, *, force: bool = False, client=None):
+    """Último cierre de cada ISIN en cartera (ADR 0012). None si no toca o no hay cartera."""
+    from datetime import datetime, timedelta
+
+    from personal_os.adapters.quotes import QuoteError, QuotesClient
+    from personal_os.core.ids import new_id
+    from personal_os.finance import investments
+    from personal_os.sync.store import SyncReport
+
+    svc = finance_service(application)
+    isins = investments.open_isins(svc)
+    if not isins:
+        return None
+    now = application.clock.now()
+    last = investments.last_price_fetch(svc)
+    if (
+        not force
+        and last
+        and datetime.fromisoformat(last.replace("Z", "+00:00"))
+        > now - timedelta(hours=PRICES_MIN_HOURS)
+    ):
+        return None
+    client = client or QuotesClient()
+    report = SyncReport(run_id=new_id("correlation"), provider="prices")
+    rows = []
+    for isin in isins:
+        try:
+            rows += [(q.isin, q.day, q.price, q.currency, q.source) for q in client.quotes(isin)]
+        except QuoteError as exc:
+            report.errors.append(str(exc))
+    stamp = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    report.stats["isins"] = len(isins)
+    report.stats["prices_new"] = investments.store_prices(svc, rows, fetched_at=stamp)
+    return report
 
 
 def applepay_enrich(application: App):
@@ -377,7 +421,7 @@ def bank_sync(application: App, *, days: int = BANK_DAYS, force: bool = False, c
         ):
             report.warnings.append(
                 f"{session.alias}: la autorización caduca el {session.valid_until[:10]};"
-                " renuévala (docs/finance.md, «Open banking»)"
+                f" renuévala con `pos finance bank-auth {session.alias}`"
             )
         accounts = [a for a in svc.list_accounts() if a.institution == institution]
         if len(accounts) != 1:
@@ -440,3 +484,16 @@ def _finance_inbox_report(application: App):
     for item in inbox.failed:
         report.warnings.append(f"{item.file_name}: {item.error}")
     return report
+
+
+def open_url(url: str) -> bool:
+    """Abre una URL en el navegador de Windows desde WSL (o el del sistema)."""
+    import shutil
+    import subprocess
+    import webbrowser
+
+    if shutil.which("cmd.exe"):
+        subprocess.run(["cmd.exe", "/c", "start", "", url.replace("&", "^&")], check=False,
+                       capture_output=True)  # fmt: skip
+        return True
+    return webbrowser.open(url)

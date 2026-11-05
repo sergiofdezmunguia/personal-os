@@ -23,6 +23,7 @@ from pathlib import Path
 from personal_os.finance import insights
 from personal_os.finance.insights import CUT_SHARE, Panel
 from personal_os.finance.models import fmt_eur
+from personal_os.ops import notices, panel_tabs
 
 MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 MONTHS_LONG = [
@@ -545,7 +546,8 @@ def headline(p: Panel) -> str:
     return first + "." + second
 
 
-def render(p: Panel, *, generated_at: str) -> str:
+def render(p: Panel, *, generated_at: str, extras: panel_tabs.Extras | None = None) -> str:
+    x = extras or panel_tabs.Extras()
     title_month = month_label(p.pace.month, long=True).capitalize() + " " + p.pace.month[:4]
     warnings = "".join(f'<div class="note" role="note">{esc(w)}</div>' for w in p.warnings)
     body = "".join(
@@ -556,6 +558,7 @@ def render(p: Panel, *, generated_at: str) -> str:
             section_money(p),
             section_focus(p),
             section_trend(p),
+            panel_tabs.section_recurring(x),
         ]
     )
     habit = ", ".join(month_label(m, long=True) for m in p.habit_months)
@@ -564,14 +567,16 @@ def render(p: Panel, *, generated_at: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <title>Pulso del mes</title>
-<style>{CSS}</style></head>
+<style>{CSS}{panel_tabs.CSS}</style></head>
 <body><div class="wrap">
 <header>
   <div class="eyebrow">{esc(title_month)} · día {p.pace.day} de {p.pace.days}</div>
-  <h1>Pulso del mes</h1>
-  <p class="lead">{esc(headline(p))}</p>
-  <p class="sub">Lo habitual es la media de {esc(habit)}.</p>
+  <h1>Pulso</h1>
 </header>
+{panel_tabs.tab_today(p, x)}
+<section class="view" id="v-dinero" aria-label="Dinero">
+<div class="intro"><p class="lead">{esc(headline(p))}</p>
+<p class="sub">Lo habitual es la media de {esc(habit)}.</p></div>
 {warnings}
 {body}
 <section class="notes" aria-labelledby="h-notes">
@@ -583,9 +588,13 @@ def render(p: Panel, *, generated_at: str) -> str:
     <li>Generado el {esc(generated_at)} por Personal OS en tu PC. Tus datos no salen de tu equipo ni de tu iCloud.</li>
   </ul>
 </section>
+</section>
+{panel_tabs.tab_portfolio(p, x)}
+{panel_tabs.tab_habits(x)}
 </div>
+{panel_tabs.TABS}
 <div class="tip" id="tip" hidden></div>
-<script>{JS}</script>
+<script>{JS}{panel_tabs.JS}</script>
 </body></html>"""
 
 
@@ -605,6 +614,20 @@ def panel_dir(cfg) -> Path:
     return cfg.data_dir / "panel"
 
 
+def _read_health(cfg) -> str | None:
+    """El registro de Apple Salud del atajo «Salud del día» (ADR 0013), si existe."""
+    from personal_os.habits import health
+
+    inbox = cfg.finance.inbox_dir
+    path = inbox / health.FOLDER / health.FILE if inbox else None
+    if path is None or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return None
+
+
 def generate(application) -> PanelResult:
     from zoneinfo import ZoneInfo
 
@@ -613,8 +636,15 @@ def generate(application) -> PanelResult:
     tz = ZoneInfo(application.config.timezone)
     now = application.clock.now().astimezone(tz)
     svc = bootstrap.finance_service(application)
-    panel = insights.build(svc, today=now.date().isoformat())
-    page = render(panel, generated_at=now.strftime("%d/%m/%Y %H:%M"))
+    today = now.date().isoformat()
+    panel = insights.build(svc, today=today)
+    notice_list = notices.build(svc, panel, now)
+    extras = panel_tabs.build_extras(
+        svc, panel, today=today,
+        alerts=[n for n in notice_list if n["kind"] == "alerta"],
+        health_text=_read_health(application.config),
+    )  # fmt: skip
+    page = render(panel, generated_at=now.strftime("%d/%m/%Y %H:%M"), extras=extras)
     folder = panel_dir(application.config)
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / INDEX
@@ -625,6 +655,11 @@ def generate(application) -> PanelResult:
     wtmp = folder / (WIDGET + ".tmp")
     wtmp.write_text(data, encoding="utf-8")
     os.replace(wtmp, folder / WIDGET)
+    notices.write(
+        folder,
+        notice_list,
+        generated_at=now.isoformat(timespec="minutes"),
+    )
     return PanelResult(target, len(page.encode()))
 
 
@@ -646,6 +681,18 @@ def widget_data(panel, *, generated_at: str) -> dict:
         "net_worth_cents": sum(h.cents for h in panel.holdings),
         "holdings": [{"label": h.label, "cents": h.cents} for h in panel.holdings],
         "uncategorized": panel.uncategorized,
+        "portfolio": [
+            {
+                "label": lp.label,
+                "value_cents": lp.value_cents,
+                "cost_cents": lp.cost_cents,
+                "gain_cents": lp.gain_cents,
+                "gain_pct": lp.gain_pct,
+                "day_change_cents": lp.day_change_cents,
+                "as_of": lp.as_of,
+            }
+            for lp in panel.portfolio
+        ],
     }
 
 
