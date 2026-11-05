@@ -60,6 +60,7 @@ def test_exposes_minimal_toolset(server):
         "investments_overview",
         "finance_recurring",
         "name_unlabeled_transaction",
+        "satellite_overview",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
     assert tools["investments_overview"].annotations.read_only_hint is True

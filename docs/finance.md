@@ -204,3 +204,11 @@ en ADR 0009.
 respaldo) como mucho cada 6 h. `pos finance prices [--force]` lo hace a mano y muestra la
 cartera a precio de hoy. El panel, el widget y el aviso de buenos días usan ese valor. El PDF
 mensual de TR sigue siendo la referencia de cierre. Detalle en ADR 0012.
+
+## Cartera satélite (ideas de compra y venta)
+
+Reglas en `[finance.satellite]` de config.toml (lista de seguimiento con símbolos de Xetra en
+EUR, tope, colchón, caída mínima, stop y objetivo). `pos sync` descarga los cierres;
+`pos finance ideas` y la pestaña **Ideas** del panel muestran el presupuesto disponible, las
+ideas (comprar / vigilar / vender), los impuestos estimados del año y si el satélite le gana
+al MSCI World. Para analizar una idea a fondo: skill `satellite-review`. Detalle en ADR 0014.

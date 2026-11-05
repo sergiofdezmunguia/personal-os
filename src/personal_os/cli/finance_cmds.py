@@ -502,6 +502,51 @@ def prices(
         application.db.close()
 
 
+@app.command("ideas")
+def ideas_cmd() -> None:
+    """Satélite por reglas (ADR 0014): presupuesto, ideas de compra/venta sobre la lista de
+    seguimiento, impuestos del año y comparación con el índice. Son ideas, no órdenes."""
+    from personal_os.finance import insights, satellite
+
+    application = wiring.open_app()
+    try:
+        cfg = application.config.finance.satellite
+        if not cfg.enabled:
+            fail(
+                "Sin lista de seguimiento: añade [finance.satellite] a config.toml (ver plantilla)"
+            )
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        habit = insights.build(svc, today=today).habit.expense_cents
+        o = satellite.overview(svc, cfg, today=today, monthly_expense_cents=habit)
+    finally:
+        application.db.close()
+    b = o.budget
+    typer.echo(f"Satélite: tope {fmt_eur(b.cap_cents)} ({cfg.share:g} % del patrimonio) · "
+               f"invertido {fmt_eur(b.invested_cents)} · disponible {fmt_eur(b.available_cents)}")  # fmt: skip
+    typer.echo(f"  Efectivo {fmt_eur(b.cash_cents)} − colchón {fmt_eur(b.emergency_cents)} "
+               f"({cfg.emergency_months:g} meses) − plan {fmt_eur(b.plan_cents)} = {fmt_eur(b.free_cash_cents)}")  # fmt: skip
+    if b.why_zero:
+        typer.echo(f"  {b.why_zero}")
+    for i in o.ideas:
+        amount = f" · {fmt_eur(i.amount_cents)}" if i.amount_cents else ""
+        levels = (
+            f" · stop {i.stop} € · objetivo {i.target} €" if i.stop and i.kind != "vender" else ""
+        )
+        typer.echo(f"{i.kind.upper():<8} {i.name}: {i.price} € · {i.reason}{amount}{levels}")
+        for w in i.warnings:
+            typer.echo(f"         ⚠ {w}")
+    t = o.taxes
+    typer.echo(f"Impuestos {t.year}: ganancias realizadas {fmt_eur(t.realized_cents)} + dividendos "
+               f"{fmt_eur(t.dividends_cents)} → unos {fmt_eur(t.tax_cents)} de IRPF")  # fmt: skip
+    if o.versus:
+        v = o.versus
+        typer.echo(f"Frente al índice desde {v.since}: satélite {fmt_eur(v.satellite_cents)} vs "
+                   f"{fmt_eur(v.benchmark_cents)} ({fmt_eur(v.diff_cents)})")  # fmt: skip
+    typer.echo("Ideas por reglas, no recomendaciones: las órdenes las das tú en tu bróker.")
+
+
 @app.command("recurring")
 def recurring(
     all_: bool = typer.Option(False, "--all", help="Incluye los que ya no cobran"),
