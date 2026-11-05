@@ -82,3 +82,46 @@ OCTOBER = chain(
         ("02/10/2026", "Compra MERCADONA FICTICIA, Ciudad, Tarjeta 1234XXXXXXXX9999", -61.10),
     ],
 )
+
+
+def _es_money(v: float) -> str:
+    text = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return ("−" if v < 0 else "") + text  # el .xlsx usa el menos tipográfico
+
+
+def build_xlsx(
+    rows: list[tuple[str, str, str, float, float]], *, iban: str = FAKE_IBAN, currency: str = "EUR"
+) -> bytes:
+    """Exportación nueva (`export_excel.xlsx`): misma maquetación, importes como texto y
+    columna Divisa. Se escribe a mano (zip + XML) con cadenas en línea."""
+    from xml.sax.saxutils import escape
+
+    def cell(ref: str, value: str) -> str:
+        return f'<c r="{ref}" t="inlineStr"><is><t>{escape(value)}</t></is></c>'
+
+    newest = _es_money(rows[-1][4]) + " EUR" if rows else "0,00 EUR"
+    lines = [
+        (1, [("C", "CUENTA ONLINE SANTANDER"), ("D", "FECHA")]),
+        (2, [("C", " ".join(iban[i : i + 4] for i in range(0, len(iban), 4))), ("D", "05/10/2026 | 10:00:00")]),
+        (3, [("C", "Titular"), ("D", "Saldo")]),
+        (4, [("C", FAKE_HOLDER), ("D", newest)]),
+        (6, [("A", "Movimientos")]),
+        (7, list(zip("ABCDEF", ["Fecha operación", "Fecha valor", "Concepto", "Importe", "Saldo", "Divisa"], strict=True))),
+    ]  # fmt: skip
+    for i, (op, val, concept, amount, bal) in enumerate(reversed(rows)):
+        values = [op, val, concept, _es_money(amount), _es_money(bal), currency]
+        lines.append((8 + i, list(zip("ABCDEF", values, strict=True))))
+    body = "".join(
+        f'<row r="{r}">' + "".join(cell(f"{c}{r}", v) for c, v in cells) + "</row>"
+        for r, cells in lines
+    )
+    ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    sheet = f'<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="{ns}"><sheetData>{body}</sheetData></worksheet>'
+    buf = io.BytesIO()
+    import zipfile
+
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+        z.writestr("xl/workbook.xml", f'<?xml version="1.0"?><workbook xmlns="{ns}"/>')
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return buf.getvalue()
