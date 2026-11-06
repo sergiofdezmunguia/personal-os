@@ -83,6 +83,8 @@ class SatelliteConfig:
     max_trade: float = 25.0  # % del satélite por operación
     benchmark: str = "EUNL.DE"  # índice de referencia (iShares Core MSCI World, Xetra)
     watch: tuple[WatchItem, ...] = ()
+    emergency_blocks: bool = True  # False: el colchón solo avisa, no impide proponer compras
+    top_k: int = 3  # cuántas oportunidades enseñar (las mejores según la puntuación)
 
     @property
     def enabled(self) -> bool:
@@ -226,7 +228,17 @@ def _load_satellite(s: dict, path: Path) -> SatelliteConfig:
         raise ConfigError(f"Sección [finance.satellite] inválida en {path}: {exc}") from exc
     if any(not 0 <= v <= 100 for k, v in numbers.items() if k != "emergency_months"):
         raise ConfigError("[finance.satellite] los porcentajes van de 0 a 100")
-    return SatelliteConfig(**numbers, benchmark=str(s.get("benchmark", "EUNL.DE")), watch=watch)
+    try:
+        top_k = int(s.get("top_k", 3))
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"[finance.satellite] top_k inválido en {path}") from exc
+    return SatelliteConfig(
+        **numbers,
+        benchmark=str(s.get("benchmark", "EUNL.DE")),
+        watch=watch,
+        emergency_blocks=bool(s.get("emergency_blocks", True)),
+        top_k=max(1, top_k),
+    )
 
 
 CONFIG_TEMPLATE = """\
@@ -267,7 +279,9 @@ keep_monthly = 12
 # Cartera satélite de compras por reglas (ADR 0014): ideas en el panel, nunca órdenes.
 # [finance.satellite]
 # share = 5               # % del patrimonio como máximo
-# emergency_months = 6    # meses de gasto intocables
+# emergency_months = 6    # meses de gasto del colchón
+# emergency_blocks = true # false: el colchón solo avisa, no impide proponer compras
+# top_k = 3               # cuántas oportunidades enseñar
 # dip = 15                # % de caída desde el máximo de 52 semanas para proponer compra
 # stop = 15               # % de pérdida para proponer vender
 # take_profit = 25        # % de ganancia para proponer vender
