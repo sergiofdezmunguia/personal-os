@@ -29,7 +29,8 @@ def doctor(
     offline: bool = typer.Option(False, "--offline", help="No contacta con iCloud (CalDAV)"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Diagnóstico: config, secretos, SQLite, backups, buzón, bridge, CalDAV, zona horaria y sync."""
+    """Diagnóstico: config, secretos, SQLite, backups, buzón, bridge, CalDAV, zona horaria, sync,
+    finanzas y frescura de precios, operaciones y open banking (sin consultar al banco)."""
     checks = run_doctor(offline=offline)
     if as_json:
         echo_json(checks)

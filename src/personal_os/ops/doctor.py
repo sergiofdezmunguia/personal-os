@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from personal_os import bootstrap
 from personal_os.core import backup as bk
 from personal_os.core import offsite
 from personal_os.core import secrets as secrets_mod
-from personal_os.core.clock import Clock, SystemClock, from_iso
+from personal_os.core.clock import Clock, SystemClock, from_iso, to_iso
 from personal_os.core.config import Config, ConfigError, load_config
 from personal_os.core.db import Database
 
@@ -29,6 +30,19 @@ STALE_BACKUP = timedelta(hours=48)
 STALE_FINANCE_IMPORT = timedelta(days=35)
 CLOSE_GRACE_DAYS = 7  # días del mes siguiente para subir extractos antes de avisar
 STALE_VALUATION_DAYS = 40  # el PDF del patrimonio neto se sube a fin de mes
+STALE_PRICE_WEEKDAYS = 3  # sesiones perdidas: con 2 no avisan ni Semana Santa ni Navidad
+UNSEEN_CHARGE_GRACE_DAYS = 7  # un cargo probable sin CSV pasa a aviso al cumplir estos días
+STALE_TRADES_DAYS = 40  # el CSV de operaciones tiene la misma cadencia mensual que el PDF
+STALE_BANK_DATA_DAYS = 7  # días sin ningún dato nuevo del banco
+MAX_LISTED_POSITIONS = 3
+PRICES_HINT = (
+    "uv run pos finance prices --force. Si persiste, las fuentes públicas pueden no cubrir "
+    "ese activo (justETF; Yahoo solo en EUR)"
+)
+TRADES_HINT = (
+    "Exporta el CSV completo de Trade Republic a la bandeja y ejecuta uv run pos finance inbox. "
+    "Hasta entonces, cartera, panel e Ideas no cuentan esas compras"
+)
 
 
 @dataclass(frozen=True)
@@ -371,6 +385,328 @@ def _check_finance_inbox(cfg: Config) -> list[Check]:
     return [Check("extractos", OK, f"Bandeja vacía ({inbox})")]
 
 
+def _today(cfg: Config, clock: Clock) -> date:
+    return clock.now().astimezone(ZoneInfo(cfg.timezone)).date()
+
+
+def _has_table(db: Database, name: str) -> bool:
+    return db.one("SELECT 1 FROM sqlite_master WHERE name = ?", (name,)) is not None
+
+
+@contextmanager
+def _finance_service(cfg: Config, clock: Clock, table: str) -> Iterator[object | None]:
+    """Servicio de finanzas sin migrar nada. None si no hay base de datos o falta `table`."""
+    if not cfg.db_path.exists():
+        yield None
+        return
+    db = Database(cfg.db_path)
+    try:
+        yield (
+            bootstrap.finance_service(bootstrap.App(config=cfg, db=db, clock=clock))
+            if _has_table(db, table)
+            else None
+        )
+    finally:
+        db.close()
+
+
+def _count(n: int, singular: str, plural: str) -> str:
+    return f"{n} {singular if n == 1 else plural}"
+
+
+def _doubt(n: int, singular: str, plural: str) -> str:
+    """Duda sobre `n` indicios; `singular` y `plural` son el pronombre que los retoma."""
+    if n == 1:
+        return f"Podría no ser una compra; la cartera no {singular} incluye"
+    return f"Podrían no ser compras; la cartera no {plural} incluye"
+
+
+def _listed(items: list) -> str:
+    shown = ", ".join(f"{i.name} ({i.key})" for i in items[:MAX_LISTED_POSITIONS])
+    extra = len(items) - MAX_LISTED_POSITIONS
+    return f"{shown} y {extra} más" if extra > 0 else shown
+
+
+def check_prices(cfg: Config, clock: Clock) -> list[Check]:
+    """Cierres de las posiciones abiertas y del satélite. Solo sabe la antigüedad del último
+    cierre guardado: si la última descarga falló, lo dice su informe, no la base de datos."""
+    from personal_os.finance import investments, satellite
+
+    today = _today(cfg, clock).isoformat()
+    with _finance_service(cfg, clock, "fin_prices") as svc:
+        if svc is None:
+            return []
+        items = investments.position_price_freshness(svc, today=today)
+        sat = cfg.finance.satellite
+        market = (
+            satellite.market_price_freshness(svc, sat, today=today)
+            if sat.enabled and _has_table(svc.db, "fin_market_prices")
+            else []
+        )
+        has_valuation = svc.db.one("SELECT 1 FROM fin_valuations LIMIT 1") is not None
+    max_age = investments.LIVE_PRICE_MAX_AGE_DAYS
+    missing = [i for i in items if i.last_close is None]
+    unused = [i for i in items if i.last_close and i.age_days > max_age]
+    stale = [
+        i
+        for i in items
+        if i.last_close and i.age_days <= max_age and i.missed_weekdays >= STALE_PRICE_WEEKDAYS
+    ]
+    fresh = [i for i in items if i not in missing + unused + stale]
+    out = []
+    if fresh:
+        oldest = min(i.last_close for i in fresh)
+        positions = _count(len(fresh), "posición", "posiciones")
+        out.append(Check("precios", OK, f"{positions} con cierre reciente (desde {oldest})"))
+    if missing:
+        out.append(
+            Check(
+                "precios",
+                WARN,
+                f"{_count(len(missing), 'posición abierta', 'posiciones abiertas')} sin "
+                f"cotización: {_listed(missing)}",
+                PRICES_HINT,
+            )
+        )
+    if stale:
+        out.append(
+            Check(
+                "precios",
+                WARN,
+                f"{_count(len(stale), 'posición', 'posiciones')} sin cierre nuevo desde hace "
+                f"{STALE_PRICE_WEEKDAYS} o más sesiones (pueden ser festivos): {_listed(stale)}",
+                PRICES_HINT,
+            )
+        )
+    if unused:
+        effects = (
+            "el panel vuelve a la valoración del PDF"
+            if has_valuation
+            else "el panel pasa a mostrar la cartera a coste"
+        )
+        if sat.enabled:
+            effects += " y el tope del satélite puede bajar"
+        out.append(
+            Check(
+                "precios",
+                WARN,
+                f"{_count(len(unused), 'posición', 'posiciones')} con el último cierre de hace "
+                f"más de {max_age} días: ya no se usa; {effects}: {_listed(unused)}",
+                PRICES_HINT,
+            )
+        )
+    late = [m for m in market if m.last_close is None or m.missed_weekdays >= STALE_PRICE_WEEKDAYS]
+    if late:
+        out.append(
+            Check(
+                "precios",
+                WARN,
+                f"Satélite: {_count(len(late), 'símbolo', 'símbolos')} sin cierre reciente "
+                "(pueden ser festivos); las Ideas pueden calcularse con cierres viejos: "
+                f"{_listed(late)}",
+                PRICES_HINT,
+            )
+        )
+    elif market:
+        symbols = _count(len(market), "símbolo", "símbolos")
+        out.append(Check("precios", OK, f"Satélite: {symbols} con cierre reciente"))
+    return out
+
+
+def _trade_visibility_checks(v, today: date, last_data: str | None) -> list[Check]:
+    """Hasta dónde se conocen las operaciones de una cuenta e indicios de que falte algo. Decisión
+    del usuario: solo los cargos probables pasan a aviso; los sin identificar, nunca."""
+    area, who, until = "operaciones", v.account_label, v.known_until
+    if not v.probable and not v.unknown:
+        if last_data is None:
+            text = "Sin datos de open banking, una compra posterior no deja ningún rastro aquí"
+        else:
+            text = (
+                "Sin cargos pendientes de identificar en lo recibido del banco (último dato "
+                f"nuevo: {last_data}). Una compra que aún no haya llegado no se puede detectar"
+            )
+        return [Check(area, OK, f"Operaciones de {who} importadas hasta {until}. {text}")]
+    since_csv = f"desde el último CSV ({until})"
+    probable = _count(v.probable, "probable compra", "probables compras")
+    overdue = (
+        v.oldest_charge is not None
+        and (today - date.fromisoformat(v.oldest_charge)).days >= UNSEEN_CHARGE_GRACE_DAYS
+    )
+    if not overdue:
+        n = v.probable + v.unknown
+        oldest = ""
+        if v.probable:
+            oldest = f", la probable compra {'más antigua ' if v.probable > 1 else ''}del "
+            oldest += v.oldest_charge
+        return [
+            Check(
+                area,
+                OK,
+                f"{_count(n, 'cargo', 'cargos')} en {who} {since_csv}{oldest}: {probable}, "
+                f"{v.unknown} sin identificar. {_doubt(n, 'lo', 'los')}",
+            )
+        ]
+    when = f"la más antigua del {v.oldest_charge}" if v.probable > 1 else f"del {v.oldest_charge}"
+    out = [
+        Check(
+            area,
+            WARN,
+            f"{probable} en {who} {since_csv}, {when}. {_doubt(v.probable, 'la', 'las')}",
+            TRADES_HINT,
+        )
+    ]
+    if v.unknown:
+        cargos = _count(v.unknown, "cargo", "cargos")
+        out.append(
+            Check(
+                area,
+                OK,
+                f"{cargos} sin identificar en {who} {since_csv}. {_doubt(v.unknown, 'lo', 'los')}",
+            )
+        )
+    return out
+
+
+def check_recent_trades(cfg: Config, clock: Clock) -> list[Check]:
+    """Infiere con señales locales: lo que aún no ha llegado no se puede detectar."""
+    from personal_os.finance import investments
+
+    today = _today(cfg, clock)
+    tz = ZoneInfo(cfg.timezone)
+    placeholders = [fallback for _, _, fallback in bootstrap.BANKS.values()]
+    with _finance_service(cfg, clock, "fin_trades") as svc:
+        if svc is None:
+            return []
+        views = investments.trade_visibility(
+            svc, today=today.isoformat(), placeholders=placeholders
+        )
+    out = []
+    for v in views:
+        last_data = (
+            from_iso(v.last_bank_data).astimezone(tz).date().isoformat()
+            if v.last_bank_data
+            else None
+        )
+        out += _trade_visibility_checks(v, today, last_data)
+        days = (today - date.fromisoformat(v.known_until)).days
+        if days > STALE_TRADES_DAYS:
+            out.append(
+                Check(
+                    "operaciones",
+                    WARN,
+                    f"El último CSV de {v.account_label} llega hasta {v.known_until} (hace {days} "
+                    "días): las operaciones posteriores son desconocidas",
+                    TRADES_HINT,
+                )
+            )
+        if v.mismatched:
+            out.append(
+                Check(
+                    "operaciones",
+                    WARN,
+                    f"La valoración del {v.valuation_as_of} declara participaciones distintas de "
+                    f"las operaciones importadas en "
+                    f"{_count(len(v.mismatched), 'posición', 'posiciones')} de "
+                    f"{v.account_label}: podría faltar una compra o ser una bonificación en "
+                    "títulos, que no se importa como operación",
+                    TRADES_HINT,
+                )
+            )
+    return out
+
+
+def check_open_banking(cfg: Config, clock: Clock) -> list[Check]:
+    """Vigencia de la autorización y último dato nuevo, sin red ni clave privada. Nunca muestra
+    `session_id` ni uids de cuenta."""
+    from personal_os.finance import investments
+
+    sessions = bootstrap.bank_sessions(cfg)
+    if sessions is None:
+        return [Check("open banking", SKIP, "No configurado")]
+    if not sessions:
+        return [
+            Check(
+                "open banking",
+                WARN,
+                "No hay ningún banco autorizado",
+                "uv run pos finance bank-auth <banco>",
+            )
+        ]
+    now = clock.now()
+    tz = ZoneInfo(cfg.timezone)
+    out = []
+    with _finance_service(cfg, clock, "fin_imports") as svc:
+        for s in sessions:
+            renew = f"uv run pos finance bank-auth {s.alias}"
+            if s.alias not in bootstrap.BANKS:
+                out.append(Check("open banking", WARN, f"{s.alias}: banco desconocido, se ignora"))
+                continue
+            if s.valid_until and s.valid_until < to_iso(now):
+                # La causa ya se conoce: no se añade el aviso de datos antiguos.
+                out.append(
+                    Check(
+                        "open banking",
+                        WARN,
+                        f"{s.alias}: la autorización caducó el {s.valid_until[:10]}",
+                        renew,
+                    )
+                )
+                continue
+            if s.valid_until and s.valid_until < to_iso(
+                now + timedelta(days=bootstrap.BANK_RENEW_DAYS)
+            ):
+                out.append(
+                    Check(
+                        "open banking",
+                        WARN,
+                        f"{s.alias}: la autorización caduca el {s.valid_until[:10]}",
+                        renew,
+                    )
+                )
+            else:
+                state = (
+                    f"autorización vigente hasta {s.valid_until[:10]}"
+                    if s.valid_until
+                    else "autorización sin fecha de caducidad conocida: vigencia desconocida"
+                )
+                out.append(Check("open banking", OK, f"{s.alias}: {state}"))
+            if svc is None:
+                continue
+            institution = bootstrap.BANKS[s.alias][0]
+            stamps = [
+                investments.last_bank_data(svc, a.id)
+                for a in svc.list_accounts()
+                if a.institution == institution
+            ]
+            last = max((t for t in stamps if t), default=None)
+            hint = "uv run pos sync --only finance y mira sus errores, sin --force, para respetar el cupo"
+            if last is None:
+                out.append(
+                    Check(
+                        "open banking",
+                        WARN,
+                        f"{s.alias}: aún no ha llegado ningún dato del banco; puede ser una "
+                        "consulta fallida, y el doctor no lo distingue",
+                        hint,
+                    )
+                )
+            elif _age(clock, last) > timedelta(days=STALE_BANK_DATA_DAYS):
+                out.append(
+                    Check(
+                        "open banking",
+                        WARN,
+                        f"{s.alias}: sin datos nuevos desde hace {_fmt_age(_age(clock, last))}; "
+                        "puede ser falta de movimientos o una consulta fallida, y el doctor no "
+                        "lo distingue",
+                        hint,
+                    )
+                )
+            else:
+                day = from_iso(last).astimezone(tz).date().isoformat()
+                out.append(Check("open banking", OK, f"{s.alias}: último dato nuevo del {day}"))
+    return out
+
+
 def check_mailbox(cfg: Config, clock: Clock) -> list[Check]:
     if cfg.apple.mailbox_dir is None:
         return [Check("buzón", FAIL, "Falta [apple].mailbox_dir", "Ver docs/setup/iphone.md")]
@@ -596,6 +932,9 @@ def run_doctor(*, offline: bool = False, clock: Clock | None = None) -> list[Che
         ("caldav", lambda: check_caldav(cfg, clock, offline=offline)),
         ("sync", lambda: check_sync_health(cfg, clock)),
         ("finanzas", lambda: check_finance(cfg, clock)),
+        ("precios", lambda: check_prices(cfg, clock)),
+        ("operaciones", lambda: check_recent_trades(cfg, clock)),
+        ("open banking", lambda: check_open_banking(cfg, clock)),
     ]
     results: list[Check] = []
     for area, fn in checks:
