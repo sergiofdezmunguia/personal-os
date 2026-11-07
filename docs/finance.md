@@ -212,3 +212,46 @@ EUR, tope, colchón, caída mínima, stop y objetivo). `pos sync` descarga los c
 `pos finance ideas` y la pestaña **Ideas** del panel muestran el presupuesto disponible, las
 ideas (comprar / vigilar / vender), los impuestos estimados del año y si el satélite le gana
 al MSCI World. Para analizar una idea a fondo: skill `satellite-review`. Detalle en ADR 0014.
+
+## Qué vigila `pos doctor` en la cartera
+
+Tres áreas, sin red, sin escribir y sin gastar cupo del banco. Son avisos (`!`): no cambian el
+código de salida. Los umbrales son constantes de código: `ops/doctor.py`,
+`investments.LIVE_PRICE_MAX_AGE_DAYS` y `bootstrap.BANK_RENEW_DAYS`.
+
+**`precios`**: el último cierre en EUR de cada posición abierta (lo vendido no se comprueba) y,
+si el satélite está activo, de la lista de seguimiento y del índice. Una *sesión perdida* es un
+día de lunes a viernes estrictamente entre el último cierre y hoy.
+
+- Hasta 2 sesiones perdidas: bien. Un fin de semana no avisa, y tampoco Semana Santa o Navidad
+  en la mayoría de los años. Un puente de 3 días da un aviso breve que se corrige solo.
+- 3 o más sesiones perdidas, o ningún cierre: aviso.
+- Último cierre de más de 7 días: la cartera a precio de hoy deja de usarlo. El panel vuelve a la
+  valoración del PDF o, si no hay ninguna, muestra la cartera a coste. Con el satélite activo, su
+  tope puede bajar.
+- No sabe si la última descarga falló: solo ve la antigüedad de lo guardado.
+
+**`operaciones`**: el sistema no puede detectar lo que no ha recibido. Dice hasta dónde conoce
+las operaciones (último movimiento del CSV de TR) y qué indicios hay de que falte algo:
+
+| Señal | Aviso |
+|---|---|
+| Valoración PDF con participaciones distintas de las operaciones | Inmediato (también lo da una bonificación en títulos, que no se importa como operación) |
+| Cargo de open banking posterior o igual al último CSV, en categoría `inversion` o sin concepto y con el importe exacto del plan: **probable compra** | A partir de 7 días; antes, solo recuento |
+| Cargo de open banking posterior o igual al último CSV, sin concepto ni categoría: **sin identificar** | **Nunca**: solo recuento |
+| Último CSV de más de 40 días | Sí |
+
+Una compra manual fuera del plan queda como «sin identificar» y no avisa por esta vía: solo se
+nota por la antigüedad del CSV o por la discrepancia con la valoración. No cuentan como indicio
+los abonos (las ventas quedan fuera), lo anterior al último CSV, lo que ya tiene comercio ni lo
+clasificado con otra categoría.
+
+No puede detectar compras aún no contabilizadas, en otro bróker o sin cargo en efectivo, un cargo
+que se empareje con otro del mismo importe a ±3 días, ni nada si open banking no está configurado
+o ha dejado de responder. «Compras» son siempre compras de inversión. Para ponerse al día,
+exporta el CSV completo a la bandeja y ejecuta `uv run pos finance inbox`.
+
+**`open banking`**: autorización caducada o a menos de 14 días, y último dato **nuevo** de más de
+7 días. Una respuesta idéntica del banco no deja rastro, así que no distingue una cuenta tranquila
+de una consulta fallida; para saberlo, `uv run pos sync --only finance` y mira sus errores (sin
+`--force`, para respetar el cupo).

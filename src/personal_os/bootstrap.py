@@ -396,6 +396,14 @@ BANK_DAYS = 30  # ventana de movimientos que se piden en cada consulta
 BANK_RENEW_DAYS = 14  # avisa de renovar la autorización con esta antelación
 
 
+def bank_sessions(cfg: Config) -> list | None:
+    """Sesiones autorizadas, sin red ni clave privada. None si open banking no está configurado."""
+    from personal_os.adapters.enablebanking import load_sessions
+
+    cred_dir = cfg.config_dir / "enablebanking"
+    return load_sessions(cred_dir) if cred_dir.is_dir() else None
+
+
 def bank_sync(application: App, *, days: int = BANK_DAYS, force: bool = False, client=None):
     """Trae saldo y movimientos de los bancos autorizados. None si no está configurado.
     Nunca interrumpe la sync: los fallos van como errores del informe."""

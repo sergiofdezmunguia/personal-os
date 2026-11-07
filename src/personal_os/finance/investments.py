@@ -23,10 +23,13 @@ from statistics import median
 from personal_os.core.events import ChangeContext
 from personal_os.core.ids import new_id
 from personal_os.finance.importers import (
+    PROVISIONAL,
     Parsed,
     ParsedActivity,
     ParsedStatement,
     ParsedValuation,
+    enablebanking,
+    trade_republic_csv,
 )
 from personal_os.finance.models import Account, FinanceError, ImportResult
 from personal_os.finance.service import FinanceService
@@ -34,6 +37,7 @@ from personal_os.finance.service import FinanceService
 VALUATION_WINDOW_DAYS = 7  # una valoración vale como «a fin de mes» si es de su última semana
 PLAN_LOOKBACK_MONTHS = 3  # el plan se deduce de las ejecuciones de los últimos meses completos
 PLAN_TOLERANCE = 0.9  # un mes cumple si cada ISIN recibe al menos el 90 % de lo habitual
+LIVE_PRICE_MAX_AGE_DAYS = 7  # un cierre más antiguo ya no valora la cartera a precio de hoy
 
 # --------------------------------------------------------------------------- importar
 
@@ -209,13 +213,7 @@ def _valuation_checks(svc: FinanceService, account_id: str, v: ParsedValuation) 
     if not svc.db.one("SELECT 1 FROM fin_trades WHERE account_id = ? LIMIT 1", (account_id,)):
         return ["Aún no hay operaciones importadas: importa también la exportación CSV"]
     warnings = []
-    held = {h.isin: h.shares for h in holdings(svc, account_id, as_of=v.as_of).values()}
-    listed = {p.isin: p.shares for p in v.positions}
-    wrong = [
-        i
-        for i in set(held) | set(listed)
-        if abs(held.get(i, Decimal(0)) - listed.get(i, Decimal(0))) > Decimal("0.0001")
-    ]
+    wrong = share_mismatches(svc, account_id, v.as_of, {p.isin: p.shares for p in v.positions})
     if wrong:
         warnings.append(
             f"{len(wrong)} posiciones no cuadran con las operaciones importadas "
@@ -225,6 +223,18 @@ def _valuation_checks(svc: FinanceService, account_id: str, v: ParsedValuation) 
     if cash is not None and cash != v.cash_cents:
         warnings.append("El efectivo del extracto no coincide con el saldo de los movimientos")
     return warnings
+
+
+def share_mismatches(
+    svc: FinanceService, account_id: str, as_of: str, listed: dict[str, Decimal]
+) -> list[str]:
+    """ISIN cuyas participaciones declaradas a `as_of` difieren de las de las operaciones."""
+    held = {h.isin: h.shares for h in holdings(svc, account_id, as_of=as_of).values()}
+    return sorted(
+        i
+        for i in set(held) | set(listed)
+        if abs(held.get(i, Decimal(0)) - listed.get(i, Decimal(0))) > Decimal("0.0001")
+    )
 
 
 # --------------------------------------------------------------------------- posiciones
@@ -674,7 +684,7 @@ def _cents(shares: Decimal, price: Decimal) -> int:
 
 
 def live_portfolios(
-    svc: FinanceService, *, today: str, max_age_days: int = 7
+    svc: FinanceService, *, today: str, max_age_days: int = LIVE_PRICE_MAX_AGE_DAYS
 ) -> list[LivePortfolio]:
     """Cartera de hoy a último cierre conocido (no más antiguo que `max_age_days`)."""
     limit = (date.fromisoformat(today) - timedelta(days=max_age_days)).isoformat()
@@ -703,4 +713,133 @@ def live_portfolios(
             ))  # fmt: skip
         positions.sort(key=lambda p: -(p.value_cents or p.cost_cents))
         out.append(LivePortfolio(acc.id, acc.label, positions))
+    return out
+
+
+# --------------------------------------------------------------------------- frescura
+# Lo que `pos doctor` puede saber sin red: la antigüedad de los cierres y hasta dónde llegan
+# las operaciones. Son señales locales: lo que aún no ha llegado no se puede detectar.
+
+
+def weekdays_between(last: str, today: str) -> int:
+    """Días de lunes a viernes estrictamente entre `last` y `today` (sesiones perdidas): hoy no
+    cuenta porque su cierre puede no estar publicado. No conoce los festivos."""
+    start, end = date.fromisoformat(last), date.fromisoformat(today)
+    return sum(
+        (start + timedelta(days=i)).weekday() < 5 for i in range(1, max(0, (end - start).days))
+    )
+
+
+@dataclass(frozen=True)
+class PriceFreshness:
+    key: str  # ISIN o símbolo
+    name: str
+    last_close: str | None
+    missed_weekdays: int | None  # None = sin ningún cierre
+    age_days: int | None
+
+
+def price_freshness(key: str, name: str, last_close: str | None, today: str) -> PriceFreshness:
+    if last_close is None:
+        return PriceFreshness(key, name, None, None, None)
+    age = (date.fromisoformat(today) - date.fromisoformat(last_close)).days
+    return PriceFreshness(key, name, last_close, weekdays_between(last_close, today), age)
+
+
+def position_price_freshness(svc: FinanceService, *, today: str) -> list[PriceFreshness]:
+    """Último cierre en EUR de cada ISIN con participaciones (mismo filtro que
+    `live_portfolios`, sin su límite de antigüedad). Lo ya vendido no se comprueba."""
+    names: dict[str, str] = {}
+    for acc in svc.list_accounts():
+        for isin, h in holdings(svc, acc.id).items():
+            if h.shares > 0:
+                names.setdefault(isin, h.name)
+    out = []
+    for isin, name in sorted(names.items(), key=lambda x: x[1]):
+        last = svc.db.one(
+            "SELECT MAX(price_date) AS d FROM fin_prices WHERE isin = ? AND currency = 'EUR'"
+            " AND price_date <= ?",
+            (isin, today),
+        )["d"]
+        out.append(price_freshness(isin, name, last, today))
+    return out
+
+
+@dataclass(frozen=True)
+class TradeVisibility:
+    account_label: str
+    known_until: str  # último movimiento del CSV (lo más fiable sobre hasta dónde se conoce)
+    last_bank_data: str | None  # instante del último dato NUEVO de open banking
+    probable: int  # cargos que probablemente son compras
+    unknown: int  # cargos sin concepto que podrían ser cualquier cosa
+    oldest_charge: str | None  # el probable más antiguo (el que decide si se avisa)
+    valuation_as_of: str | None
+    mismatched: list[str]  # ISIN en los que la valoración difiere de las operaciones
+
+
+def last_bank_data(svc: FinanceService, account_id: str) -> str | None:
+    """Última importación de open banking. Una respuesta idéntica no crea fila: es el último
+    dato nuevo, no la última consulta."""
+    return svc.db.one(
+        "SELECT MAX(imported_at) AS t FROM fin_imports WHERE account_id = ? AND source = ?",
+        (account_id, enablebanking.SOURCE),
+    )["t"]
+
+
+def trade_visibility(
+    svc: FinanceService, *, today: str, placeholders: list[str]
+) -> list[TradeVisibility]:
+    """Por cuenta con operaciones: hasta dónde se conocen y qué cargos llegados por open banking
+    (`prov:`) desde el último CSV podrían ser compras. `placeholders` son los conceptos de
+    relleno de los movimientos sin concepto. Los abonos, lo anterior al CSV, lo que ya tiene
+    comercio y lo clasificado con otra categoría no cuentan."""
+    plan_amounts = {p.amount_cents for p in deduce_plan(svc, today)}
+    out = []
+    for acc in svc.list_accounts():
+        last_trade = svc.db.one(
+            "SELECT MAX(trade_date) AS d FROM fin_trades WHERE account_id = ?", (acc.id,)
+        )["d"]
+        if last_trade is None:
+            continue
+        csv_until = svc.db.one(
+            "SELECT MAX(period_to) AS d FROM fin_imports WHERE account_id = ? AND source = ?",
+            (acc.id, trade_republic_csv.SOURCE),
+        )["d"]
+        known_until = csv_until or last_trade
+        probable: list[str] = []
+        unknown = 0
+        for r in svc.db.all(
+            "SELECT booking_date, description, amount_cents, category FROM fin_transactions"
+            " WHERE account_id = ? AND external_id LIKE ? AND amount_cents < 0"
+            " AND booking_date >= ?",
+            (acc.id, PROVISIONAL + "%", known_until),
+        ):
+            bare = r["category"] is None and r["description"] in placeholders
+            if r["category"] == "inversion" or (bare and -r["amount_cents"] in plan_amounts):
+                probable.append(r["booking_date"])
+            elif bare:
+                unknown += 1
+        val = _latest_valuation(svc, acc.id)
+        mismatched: list[str] = []
+        if val is not None:
+            listed = {
+                p["isin"]: Decimal(p["shares"])
+                for p in svc.db.all(
+                    "SELECT isin, shares FROM fin_valuation_positions WHERE valuation_id = ?",
+                    (val["id"],),
+                )
+            }
+            mismatched = share_mismatches(svc, acc.id, val["as_of"], listed)
+        out.append(
+            TradeVisibility(
+                account_label=acc.label,
+                known_until=known_until,
+                last_bank_data=last_bank_data(svc, acc.id),
+                probable=len(probable),
+                unknown=unknown,
+                oldest_charge=min(probable, default=None),
+                valuation_as_of=val["as_of"] if val is not None else None,
+                mismatched=mismatched,
+            )
+        )
     return out

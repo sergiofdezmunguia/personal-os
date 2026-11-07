@@ -77,6 +77,23 @@ def history_start(svc: FinanceService, symbol: str) -> str | None:
     )["d"]
 
 
+def market_price_freshness(
+    svc: FinanceService, cfg, *, today: str
+) -> list[investments.PriceFreshness]:
+    """Último cierre en EUR de la lista de seguimiento y del índice de referencia."""
+    names = {w.symbol: w.name for w in cfg.watch}
+    names.setdefault(cfg.benchmark, "Índice de referencia")
+    out = []
+    for symbol, name in names.items():
+        last = svc.db.one(
+            "SELECT MAX(price_date) AS d FROM fin_market_prices WHERE symbol = ?"
+            " AND currency = 'EUR' AND price_date <= ?",
+            (symbol, today),
+        )["d"]
+        out.append(investments.price_freshness(symbol, name, last, today))
+    return out
+
+
 # --------------------------------------------------------------------------- señales
 
 
