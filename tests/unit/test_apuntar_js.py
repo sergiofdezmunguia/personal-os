@@ -71,7 +71,11 @@ const src = require("fs").readFileSync(process.argv[1], "utf8");
 const saved = []; let output = null, alerts = 0;
 const input = JSON.parse(process.argv[2]);
 let clip = input.clipboard || "";
+const NOW = new Date(2026, 10, 2, 22, 0);  // lunes 2 de noviembre de 2026: tests sin fecha real
+const RealDate = Date;
+class FakeDate extends RealDate { constructor(...a) { super(...(a.length ? a : [NOW.getTime()])); } static now() { return NOW.getTime(); } }
 const g = {
+  Date: FakeDate,
   args: input.args,
   config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
   Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
