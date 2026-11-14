@@ -591,7 +591,6 @@ def render(p: Panel, *, generated_at: str, extras: panel_tabs.Extras | None = No
 </section>
 {panel_tabs.tab_portfolio(p, x)}
 {panel_tabs.tab_ideas(x)}
-{panel_tabs.tab_habits(x)}
 </div>
 {panel_tabs.TABS}
 <div class="tip" id="tip" hidden></div>

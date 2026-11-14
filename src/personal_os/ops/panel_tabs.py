@@ -1,4 +1,5 @@
-"""Panel v2 (ADR 0009, revisado): pestañas Hoy · Dinero · Cartera · Hábitos.
+"""Panel v2 (ADR 0009, revisado): pestañas Hoy · Dinero · Cartera · Ideas. Los hábitos los
+llevan Fitia y Salud; del fichero de Salud solo queda la tarjeta «Ayer en Salud» de Hoy.
 
 «Dinero» es el análisis de siempre (`panel.py`). Este módulo añade las otras pestañas y los
 datos extra que necesitan. Igual que el resto del panel: HTML generado en el PC, legible sin
@@ -266,41 +267,6 @@ def _habit_tiles(day: health.Day, s: health.Summary) -> str:
     return f'<div class="habs">{"".join(tiles)}</div>'
 
 
-def tab_habits(x: Extras) -> str:
-    s = x.habits
-    if not x.habits_file or s is None:
-        body = """<div class="panel"><p>Aún no llegan datos de Salud.</p>
-          <p class="muted small">Crea el atajo «Salud del día» (pasos, minutos de ejercicio, horas de sueño y kcal de Fitia) que añade cada noche una línea a <b>iCloud Drive › PersonalOS-extractos › salud › salud.txt</b>. Los pasos están en <code>docs/setup/iphone.md</code>.</p></div>"""
-        return f'<section class="view" id="v-habitos" aria-label="Hábitos"><h2>Hábitos</h2>{body}</section>'
-    steps = [d.get("pasos") for d in s.days]
-    top = max((v for v in steps if v), default=1)
-    cells = []
-    first = date.fromisoformat(s.days[0].day)
-    cells += ['<div class="d pad"></div>'] * first.weekday()
-    for d in s.days:
-        v = d.get("pasos")
-        lvl = 0 if v is None else min(4, 1 + int(3.999 * v / top))
-        met = " met" if d.met("pasos") else ""
-        tip = f"{short_day(d.day)}|Pasos: {_fmt('pasos', v)}|Ejercicio: {_fmt('ejercicio', d.get('ejercicio'))}|Sueño: {_fmt('sueno', d.get('sueno'))}"
-        cells.append(
-            f'<div class="d l{lvl}{met}" data-tip="{esc(tip)}" tabindex="0"><span class="n">{date.fromisoformat(d.day).day}</span></div>'
-        )
-    dow = "".join(f'<div class="dow">{x}</div>' for x in DOW)
-    avgs = "".join(
-        f'<div class="fact"><div class="k">{LABELS[k]}</div><div class="v">{_fmt(k, s.averages.get(k))}</div><div class="n">media 28 días</div></div>'
-        for k in ("pasos", "ejercicio", "sueno", "kcal")
-        if k in s.averages
-    )
-    last = next((d for d in reversed(s.days) if d.values), None)
-    tiles = _habit_tiles(last, s) if last else ""
-    return f"""<section class="view" id="v-habitos" aria-label="Hábitos"><h2>Hábitos</h2>
-      <div class="panel"><h3>{"Último día: " + short_day(last.day) if last else "Sin datos recientes"}</h3>{tiles}</div>
-      <div class="panel"><div class="row-between"><h3>Pasos · 4 semanas</h3><span class="muted small0">✓ = objetivo de {_fmt("pasos", health.GOALS["pasos"])}</span></div>
-        <div class="cal">{dow}{"".join(cells)}</div></div>
-      <div class="panel"><div class="facts">{avgs}</div></div>
-    </section>"""
-
-
 # --------------------------------------------------------------------------- Ideas (satélite)
 
 KIND = {"comprar": ("good", "Comprar"), "vender": ("warn", "Vender"), "vigilar": ("", "Vigilar")}
@@ -482,5 +448,4 @@ TABS = """<div class="tabs" role="navigation" aria-label="Secciones"><nav>
 <button type="button" data-view="v-dinero"><span class="i" aria-hidden="true">💶</span>Dinero</button>
 <button type="button" data-view="v-cartera"><span class="i" aria-hidden="true">📈</span>Cartera</button>
 <button type="button" data-view="v-ideas"><span class="i" aria-hidden="true">💡</span>Ideas</button>
-<button type="button" data-view="v-habitos"><span class="i" aria-hidden="true">🏃</span>Hábitos</button>
 </nav></div>"""

@@ -192,19 +192,20 @@ def test_v2_tabs_and_extras(svc):
         {"title": "📈 Sube una cuota", "body": "Streaming inventado sube.", "kind": "alerta"}
     ], health_text=log)  # fmt: skip
     page = panel.render(p, generated_at="05/10/2026 09:00", extras=x)
-    for view in ("v-hoy", "v-dinero", "v-cartera", "v-habitos"):
+    for view in ("v-hoy", "v-dinero", "v-cartera", "v-ideas"):
         assert f'id="{view}"' in page and f'data-view="{view}"' in page
+    assert "v-habitos" not in page  # los hábitos los llevan Fitia y Salud
     assert 'id="agenda"' in page and "window.posAgenda" in page
     assert "Streaming inventado sube." in page
     assert "Cobros recurrentes" in page  # streaming mensual de los datos inventados
     assert "9.000" in page  # pasos del día anterior
 
 
-def test_v2_without_health_explains_setup(svc):
+def test_v2_without_health_shows_no_health_card(svc):
     from personal_os.ops import panel_tabs
 
     _months(svc)
     p = insights.build(svc, today=TODAY)
     page = panel.render(p, generated_at="x", extras=panel_tabs.build_extras(
         svc, p, today=TODAY, alerts=[], health_text=None))  # fmt: skip
-    assert "Aún no llegan datos de Salud" in page
+    assert "Ayer en Salud" not in page and "Aún no llegan datos de Salud" not in page
