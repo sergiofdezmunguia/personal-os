@@ -104,7 +104,7 @@ Reglas impuestas por `lint-imports`:
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
   de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.
-- Panel v2 con pestañas Hoy · Dinero · Cartera · Hábitos (`ops/panel_tabs.py`); hábitos de
+- Panel v2 con pestañas Hoy · Dinero · Cartera · Ideas (`ops/panel_tabs.py`; sin pestaña Hábitos: los lleva en Fitia y Salud); tarjeta «Ayer en Salud» en Hoy con datos
   Apple Salud por fichero (`habits/health.py`, ADR 0013); la agenda la inyecta el visor.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
   (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.
