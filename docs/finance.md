@@ -95,6 +95,9 @@ sin exportar nada. También a mano: `uv run pos finance bank-sync [--days 90] [-
   con el ya importado: si la diferencia es constante (el historial importado no empezaba en
   el saldo real) se acepta con un aviso y desde entonces manda el banco; si varía, faltan o
   sobran movimientos y no se importa nada.
+- **Santander con el saldo atrasado**: a veces lista un cargo que su saldo contable aún no
+  descuenta. Si 5 o más días ya importados por id difieren todos en la misma cantidad, se
+  mantiene el saldo ya importado (el banco no manda), se importa lo nuevo y se avisa.
 - **Renovar la autorización**: caduca (Santander ~180 días, TR ~90). `pos sync` avisa 14
   días antes. `uv run pos finance bank-auth santander` (o `traderepublic`) abre el banco en el
   navegador, recoge la autorización en la dirección de retorno de la aplicación

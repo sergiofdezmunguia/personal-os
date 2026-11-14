@@ -170,6 +170,43 @@ def test_balance_mismatch_imports_nothing(svc):
     assert len(svc.list_transactions(limit=50)) == len(days)
 
 
+def test_bank_balance_that_lags_its_own_list_is_anchored_to_imported(svc):
+    """Santander lista un cargo nuevo pero su saldo aún no lo descuenta: todos los días ya
+    importados por id difieren en ese importe. Se importa el cargo y se conserva el saldo
+    encadenado, con aviso, en vez de rechazar cada consulta."""
+    seed(svc, "santander", [("2026-10-01", 100000)])
+    account = svc.list_accounts()[0]
+    days = [f"2026-10-{d:02d}" for d in range(20, 26)]
+    first = parse([tx(d, -10, ref=f"r{i}") for i, d in enumerate(reversed(days))], "999.40")
+    do_import(svc, account, first)
+    # Nueva consulta: cargo del 6-nov listado, pero el saldo del banco sigue en 999.40.
+    lagging = parse(
+        [tx("2026-11-06", -25, ref="new")]
+        + [tx(d, -10, ref=f"r{i}") for i, d in enumerate(reversed(days))],
+        "999.40",
+    )
+    res = do_import(svc, account, lagging, sha="eb2")
+    assert res.rows_new == 1
+    assert any("aún no ha aplicado" in w for w in res.warnings)
+    newest = svc.list_transactions(limit=1)[0]
+    assert newest.balance_after_cents == 99940 - 2500
+
+
+def test_varying_lag_is_still_rejected(svc):
+    seed(svc, "santander", [("2026-10-01", 100000)])
+    account = svc.list_accounts()[0]
+    days = [f"2026-10-{d:02d}" for d in range(20, 26)]
+    do_import(
+        svc,
+        account,
+        parse([tx(d, -10, ref=f"r{i}") for i, d in enumerate(reversed(days))], "999.40"),
+    )
+    # Un importe distinto en medio: las diferencias ya no son constantes.
+    changed = [tx(d, -10 if i != 2 else -12, ref=f"r{i}") for i, d in enumerate(reversed(days))]
+    with pytest.raises(FinanceError, match="no cuadra"):
+        do_import(svc, account, parse(changed, "999.40"), sha="eb2")
+
+
 def test_trade_republic_provisional_rows_match_then_csv_adopts_them(svc):
     seed(svc, "trade_republic", [("2026-10-01", 5000), ("2026-10-02", -150)], kind="broker",
          ids=True)  # fmt: skip
