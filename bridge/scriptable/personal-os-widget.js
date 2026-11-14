@@ -19,6 +19,26 @@ const C = {
 const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
   "septiembre", "octubre", "noviembre", "diciembre"];
 
+const STALE_HOURS = 36; // sin datos nuevos del PC en día y medio ⇒ aviso en rojo
+const DAYS_SHORT = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+// Fecha absoluta (no «hace X»: iOS decide cuándo repinta). Nunca lanza.
+function dataStamp(iso, now) {
+  const d = typeof iso === "string" ? new Date(iso) : null;
+  if (!d || isNaN(d.getTime())) return { text: "Datos sin fecha", stale: false };
+  if (now - d >= STALE_HOURS * 3600000) {
+    return { text: `Datos antiguos: ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`, stale: true };
+  }
+  return { text: `Datos: ${DAYS_SHORT[d.getDay()]} ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}, ${hm(d)}`, stale: false };
+}
+
+function stampLine(stack, m) {
+  const st = dataStamp(m.generated_at, new Date());
+  if (st.stale) text(stack, st.text, 10, C.crit, "bold");
+  else text(stack, st.text, 9, C.muted);
+}
+
 const eur = (cents) => Math.round(cents / 100).toLocaleString("es-ES") + " €";
 const hm = (d) => `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
 
@@ -135,7 +155,7 @@ async function build(family) {
   if (family === "small") {
     moneyBlock(w, m, 120);
     w.addSpacer();
-    if (m) text(w, `Patrimonio ${eur(m.net_worth_cents)}`, 10, C.muted);
+    if (m) { text(w, `Patrimonio ${eur(m.net_worth_cents)}`, 10, C.muted); stampLine(w, m); }
     return w;
   }
   const row = w.addStack();
@@ -160,12 +180,16 @@ async function build(family) {
     }
   }
   w.addSpacer();
-  if (m) text(w, `Datos del PC: ${m.generated_at.slice(11, 16)}`, 9, C.muted);
+  if (m) stampLine(w, m);
   return w;
 }
 
-const family = config.widgetFamily || "medium";
-const widget = await build(family);
-if (config.runsInWidget) Script.setWidget(widget);
-else await widget.presentMedium();
-Script.complete();
+if (typeof module !== "undefined" && module) module.exports = { dataStamp, STALE_HOURS };
+// En los tests (Node) solo se cargan las funciones puras.
+if (typeof ListWidget !== "undefined") {
+  const family = config.widgetFamily || "medium";
+  const widget = await build(family);
+  if (config.runsInWidget) Script.setWidget(widget);
+  else await widget.presentMedium();
+  Script.complete();
+}

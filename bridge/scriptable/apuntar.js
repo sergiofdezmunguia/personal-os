@@ -4,7 +4,7 @@
 // Apuntar: «tengo médico el martes 24 a las 12:30» → evento «🩺 Médico» en el Calendario
 // del iPhone. Todo en el iPhone: sin red y sin IA (reglas fijas, ver parseEvent).
 // Uso: desde Atajos/Siri (Dictar texto → Ejecutar script «Apuntar» con el texto) o
-// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 11 (también cancela, mueve y crea recordatorios por voz).
+// abriendo el script y escribiendo. Instalado por `pos bridge install`. Versión 12 (avisa si se solapa con otra cita; también cancela, mueve y crea recordatorios por voz).
 
 const CALENDAR_NAME = ""; // vacío = el calendario predeterminado del iPhone
 
@@ -438,6 +438,39 @@ async function runAction(act, now) {
 }
 const hmStr = (d) => `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
 
+// Solapes: solo eventos con hora que se cruzan de verdad (los contiguos y los de todo el día,
+// como cumpleaños o festivos, no cuentan). Función pura: la usan los tests.
+function findOverlaps(events, start, end) {
+  return (events || [])
+    .filter((e) => !e.isAllDay && e.startDate < end && start < e.endDate)
+    .sort((a, b) => a.startDate - b.startDate);
+}
+
+// Lee el calendario alrededor del evento nuevo. Nunca impide guardar: si falla, `checked` es
+// false y el mensaje lo dice, para no confundir «no hay solape» con «no lo sé».
+async function readOverlaps(p) {
+  if (p.allDay) return { events: [], checked: true };
+  try {
+    const around = await CalendarEvent.between(addDays(p.start, -1), addDays(p.end, 1), []);
+    return { events: findOverlaps(around, p.start, p.end), checked: true };
+  } catch (e) {
+    return { events: [], checked: false };
+  }
+}
+
+function overlapNote(o) {
+  if (!o.checked) return "No he podido comprobar si se solapa.";
+  if (!o.events.length) return "";
+  const shown = o.events.slice(0, 3).map((e) => `${noEmoji(e.title)} (${hmStr(e.startDate)}–${hmStr(e.endDate)})`);
+  const more = o.events.length > 3 ? ` y ${o.events.length - 3} más` : "";
+  return `Ojo: se solapa con ${shown.join(", ")}${more}.`;
+}
+
+function undoHint(p) {
+  const days = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+  return `Para quitarlo: «cancela ${noEmoji(p.title)} del ${days[p.start.getDay()]} ${p.start.getDate()}».`;
+}
+
 async function main() {
   const input = collectInput(args, (f) => FileManager.local().readString(f));
   let clip = "";
@@ -496,18 +529,21 @@ async function main() {
   ev.notes = fromModel ? "Apuntado con Apple Intelligence" : `Apuntado: «${text}»`;
   if (p.location) ev.location = p.location;
   if (CALENDAR_NAME) ev.calendar = await Calendar.forEventsByTitle(CALENDAR_NAME);
-  const summary = describe(p) + (p.warnings.length ? `\n${p.warnings.join(" ")}` : "");
+  const overlaps = await readOverlaps(p);
+  const note = overlapNote(overlaps);
+  const summary = describe(p) + (p.warnings.length ? `\n${p.warnings.join(" ")}` : "") + (note ? `\n${note}` : "");
   if (siri) {
     try {
       ev.save();
-      Script.setShortcutOutput(`Apuntado: ${summary}`);
+      const undo = overlaps.events.length ? ` ${undoHint(p)}` : "";
+      Script.setShortcutOutput(`Apuntado: ${summary}${undo}`);
     } catch (e) {
       Script.setShortcutOutput(`No lo he podido guardar (${e}). Abre Scriptable y da permiso al Calendario.`);
     }
     return Script.complete();
   }
   const c = new Alert();
-  c.title = "¿Lo apunto así?";
+  c.title = overlaps.events.length ? "Se solapa con otra cita" : "¿Lo apunto así?";
   c.message = summary;
   c.addAction("Guardar");
   c.addAction("Editar antes (avisos, lugar…)");
@@ -522,5 +558,5 @@ async function main() {
 // Scriptable (Script, CalendarEvent). Hay que esperar a main(): si no, desde Atajos el
 // script termina antes de crear el evento y de devolver la respuesta.
 const IN_SCRIPTABLE = typeof Script !== "undefined" && typeof CalendarEvent !== "undefined";
-if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, parseModelReply, parseKeyValues, parseStructured, collectInput, mergeClipboard, detectAction, findEvents, splitMove, moveTo, keywords };
+if (typeof module !== "undefined" && module) module.exports = { parseEvent, describe, findOverlaps, overlapNote, parseModelReply, parseKeyValues, parseStructured, collectInput, mergeClipboard, detectAction, findEvents, splitMove, moveTo, keywords };
 if (IN_SCRIPTABLE) await main();

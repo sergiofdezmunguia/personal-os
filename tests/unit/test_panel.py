@@ -167,6 +167,8 @@ def test_pos_panel_command(app, svc, monkeypatch):
     assert target.read_text(encoding="utf-8").startswith("<!doctype") and opened == [target]
     assert CliRunner().invoke(cli, ["panel", "--no-open"]).exit_code == 0 and len(opened) == 1
     data = json.loads((target.parent / "widget.json").read_text(encoding="utf-8"))
+    # El widget parsea este formato para su sello de fecha (personal-os-widget.js, dataStamp).
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2}", data["generated_at"])
     assert data["version"] == 1 and len(data["month"]) == 7  # la CLI usa el reloj real
     assert data["variable_cents"] >= 0 and data["net_worth_cents"] == sum(
         h["cents"] for h in data["holdings"]
