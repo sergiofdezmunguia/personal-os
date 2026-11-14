@@ -97,4 +97,4 @@ Automatización personal → **Hora del día** 23:30, diaria, **Ejecutar inmedia
 5. **Añadir a archivo de texto** → iCloud Drive › PersonalOS-extractos › salud › `salud.txt`
    (crear la carpeta la primera vez), *nueva línea* activado.
 
-El panel (pestaña Hábitos y «Ayer en Salud» en Hoy) lo lee en la siguiente sincronización.
+El panel (tarjeta «Ayer en Salud» en Hoy; la pestaña Hábitos se quitó en 2026-11) lo lee en la siguiente sincronización.
