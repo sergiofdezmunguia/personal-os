@@ -291,7 +291,7 @@ def test_cli_close_mentions_pending_suggestions_and_approve_flags(app, svc):
     n = len(bootstrap.suggestion_service(app).list(month=month))
     close = runner.invoke(cli, ["finance", "close", month])
     assert close.exit_code == 0
-    assert (f"{n} propuestas del modelo por revisar" in close.output) == bool(n)
+    assert n > 0 and f"{n} propuestas del modelo por revisar" in close.output
     first = bootstrap.suggestion_service(app).list()[0].transaction.id
     both = runner.invoke(cli, ["finance", "suggestion", "approve", first, "--all"])
     assert both.exit_code != 0 and "no ambos" in both.output
