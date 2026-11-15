@@ -91,9 +91,10 @@ def test_reproducible_evaluation_on_new_merchants():
     trozos de nombre entre comercios de la misma categoría."""
     ev = categorizer.evaluate_new_merchants(fake.generate(1500, seed=7))
     assert ev["merchants"] == 638
-    assert round(ev["accuracy"], 3) == 0.879
-    assert round(ev["coverage"], 3) == 0.977
-    assert round(ev["precision_covered"], 3) == 0.895
+    # Tolerancia: BLAS/sklearn dan diferencias de 1e-3 entre máquinas (CI frente a local).
+    assert ev["accuracy"] == pytest.approx(0.879, abs=0.005)
+    assert ev["coverage"] == pytest.approx(0.977, abs=0.005)
+    assert ev["precision_covered"] == pytest.approx(0.895, abs=0.005)
 
 
 # ------------------------------------------------------------------ servicio
