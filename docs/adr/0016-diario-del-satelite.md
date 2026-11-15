@@ -37,19 +37,27 @@ humor, sin ruido: pocos avisos, texto llano y recordando que es contexto, no una
 - Intervalo de confianza al 95 % con *bootstrap* por meses (las ideas de un mismo mes van
   juntas); sin al menos 3 meses distintos, sin intervalo.
 - Calibración de los rangos con las ideas que los tenían: cuántas veces la peor caída superó la
-  «1 de cada 10», el final quedó bajo el cuantil 10 o sobre el 90, con intervalo de Wilson.
+  «1 de cada 10», el final quedó bajo el cuantil 10 o sobre el 90, cada una con intervalo de
+  Wilson.
+- Sesgo conocido: las acciones van sin dividendos y el índice por defecto (`EUNL.DE`) es de
+  acumulación, con ellos. La comparación sale algo en contra de las ideas (1–2 puntos al año);
+  el texto lo dice.
 - Mínimo `MIN_CASES = 10` casos para enseñar un resultado. Mientras tanto se dice cuántos días
-  hay apuntados y hacia cuándo se cumplen los primeros casos a 1 mes.
+  hay apuntados y hacia cuándo se cumplen los primeros casos a 1 mes (o, si ya se cumplen,
+  cuántos hay de los 10).
 - Se ve en `pos finance journal [--days N]` (últimos días + evaluación) y en una tarjeta
   plegada de la pestaña Ideas («¿Acierta el satélite?») **solo cuando hay algo que enseñar**.
 
 ### 3. Aviso de cambio de régimen (`ops/notices.py`, `regime`)
 
 - Se calcula del propio diario (el estado persistido es el diario: nada nuevo que mantener).
-  El primer régimen conocido es el punto de partida, sin aviso. «Desconocido» no cuenta.
-- Un régimen nuevo cuenta si se ve **dos sesiones de mercado seguidas** (`CONFIRM_SESSIONS`;
-  la misma sesión apuntada en fin de semana no suma): un indicador que baila en el umbral no
-  genera avisos de ida y vuelta. A cambio, el aviso llega un día más tarde.
+  El primer régimen conocido es el punto de partida, sin aviso.
+- Un régimen nuevo cuenta si se ve **dos sesiones de mercado seguidas** (`CONFIRM_SESSIONS`).
+  La misma sesión apuntada en fin de semana no suma; un «desconocido» o un hueco de más de 5
+  días en el diario rompen la racha (sin cambiar el régimen confirmado). A cambio, el aviso
+  llega un día más tarde.
+- Tras un cambio, el siguiente necesita al menos 5 sesiones (`MIN_SESSIONS_BETWEEN`): un
+  indicador que baila en el umbral no genera avisos de ida y vuelta.
 - Avisa al pasar a miedo, a euforia o de vuelta a neutral. Id estable
   `regimen:<régimen>:<sesión>` y ventana de 3 días como las alertas: el iPhone lo enseña una vez.
   Tipo `mercado` (no entra en las alertas de gasto de la pestaña Hoy).
@@ -57,7 +65,8 @@ humor, sin ruido: pocos avisos, texto llano y recordando que es contexto, no una
   máximo de 52 semanas. Es contexto, no una señal: en la prueba histórica entrar con miedo no
   dio ventaja. Tus reglas no cambian.» (euforia: «Es contexto, no una señal con ventaja»;
   neutral: «Se acaba el miedo: el mercado vuelve a neutral…»). Si un día `market.fear_edge()`
-  fuera cierto, desaparece la frase de «no dio ventaja».
+  fuera cierto, el aviso de miedo diría «la prueba histórica sugiere algo de ventaja, sin
+  garantías».
 
 ## Consecuencias
 

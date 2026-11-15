@@ -307,11 +307,11 @@ def satellite_journal(application: App):
         return None
     now = application.clock.now()
     today = now.astimezone(ZoneInfo(application.config.timezone)).date().isoformat()
-    svc = finance_service(application)
-    if journal.recorded(svc, today):
-        return None
     report = SyncReport(run_id=new_id("correlation"), provider="satellite_journal")
     try:
+        svc = finance_service(application)
+        if journal.recorded(svc, today):
+            return None
         habit = insights.build(svc, today=today).habit.expense_cents
         o = satellite.overview(svc, sat, today=today, monthly_expense_cents=habit)
         if not o.signals:

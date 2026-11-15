@@ -29,6 +29,10 @@ from personal_os.finance.service import FinanceService
 
 MIN_CASES = 10  # casos independientes ya cumplidos para enseñar un resultado
 CONFIRM_SESSIONS = 2  # un cambio de régimen cuenta si dura dos sesiones seguidas
+MAX_SESSION_GAP_DAYS = 5  # más días entre dos apuntes: ya no son «seguidas»
+MIN_SESSIONS_BETWEEN = (
+    5  # tras un cambio, otro necesita al menos estas sesiones (sin idas y vueltas)
+)
 BOOT = 2000
 SEED = 16
 BENCH_MAX_GAP_DAYS = 7  # el índice tiene que tener cierre cerca de las fechas comparadas
@@ -139,23 +143,38 @@ class RegimeChange:
 
 
 def regime_changes(svc: FinanceService) -> list[RegimeChange]:
-    """Cambios de régimen confirmados, del más antiguo al más reciente. «Desconocido» no cuenta
-    (ni rompe ni empieza nada). El primer régimen conocido es el punto de partida (sin aviso).
-    Un régimen nuevo tiene que verse en `CONFIRM_SESSIONS` sesiones seguidas: así un indicador
-    que baila alrededor del umbral no genera avisos de ida y vuelta."""
+    """Cambios de régimen confirmados, del más antiguo al más reciente. El primer régimen
+    conocido es el punto de partida (sin aviso). Contra el ruido:
+
+    - un régimen nuevo tiene que verse en `CONFIRM_SESSIONS` sesiones **seguidas**: un
+      «desconocido» o un hueco de más de `MAX_SESSION_GAP_DAYS` días entre apuntes rompe la
+      racha (pero no cambia el régimen confirmado);
+    - tras un cambio, el siguiente necesita al menos `MIN_SESSIONS_BETWEEN` sesiones: un
+      indicador que baila alrededor del umbral no genera avisos de ida y vuelta."""
     rows = svc.db.all(
-        "SELECT day, regime, regime_day, indicators FROM fin_satellite_journal"
-        " WHERE regime <> 'desconocido' ORDER BY day"
+        "SELECT day, regime, regime_day, indicators FROM fin_satellite_journal ORDER BY day"
     )
     confirmed: str | None = None
-    streak_label, streak, last_session = None, 0, None
+    streak_label, streak = None, 0
+    last_session: str | None = None
+    session_n, changed_at = 0, -(10**9)
     out = []
     for r in rows:
         session = r["regime_day"] or r["day"]
         if session == last_session:
             continue  # misma sesión de mercado apuntada otro día (fin de semana, festivo)
+        if (
+            last_session is not None
+            and (date.fromisoformat(session) - date.fromisoformat(last_session)).days
+            > MAX_SESSION_GAP_DAYS
+        ):
+            streak_label, streak = None, 0  # hueco en el diario: no son sesiones seguidas
         last_session = session
+        session_n += 1
         label = r["regime"]
+        if label == "desconocido":
+            streak_label, streak = None, 0
+            continue
         if confirmed is None:
             confirmed = label
             continue
@@ -164,10 +183,10 @@ def regime_changes(svc: FinanceService) -> list[RegimeChange]:
             continue
         streak = streak + 1 if label == streak_label else 1
         streak_label = label
-        if streak >= CONFIRM_SESSIONS:
+        if streak >= CONFIRM_SESSIONS and session_n - changed_at >= MIN_SESSIONS_BETWEEN:
             out.append(RegimeChange(r["day"], r["regime_day"], confirmed, label,
                                     json.loads(r["indicators"])))  # fmt: skip
-            confirmed, streak_label, streak = label, None, 0
+            confirmed, streak_label, streak, changed_at = label, None, 0, session_n
     return out
 
 
@@ -212,6 +231,8 @@ class Evaluation:
     results: list[Result]
     calibration: list[Calibration]
     first_due: dict[int, str]  # plazo → fecha aproximada en que se cumple el primer caso
+    symbols: int = 0  # valores distintos con alguna idea
+    today: str | None = None
 
     @property
     def ready(self) -> bool:
@@ -343,6 +364,7 @@ def evaluate(svc: FinanceService, *, today: str) -> Evaluation:
         first_day=first_day, last_day=es[-1].day if es else None, days=len(es),
         ideas=len(all_ideas), results=results, calibration=cal,
         first_due={h: _due(first_price, h) for h in market.HORIZONS} if first_price else {},
+        symbols=len(by_symbol), today=today,
     )  # fmt: skip
 
 
@@ -359,6 +381,11 @@ def _short(day: str) -> str:
     return f"{d.day}/{d.month}/{d.year}"
 
 
+def _rate(k: int, n: int) -> str:
+    lo, hi = wilson(k, n)
+    return f"{k} de {n} casos ({round(100 * k / n)} %, entre {round(lo)} y {round(hi)} %)"
+
+
 KIND_TEXT = {
     "comprar": "Ideas de compra",
     "vigilar": "Valores en «vigilar» (lo que habría pasado de comprarlos)",
@@ -371,11 +398,18 @@ def evaluation_lines(ev: Evaluation) -> list[str]:
     if not ev.days:
         return ["El diario del satélite aún está vacío: se apunta solo en cada `pos sync`."]
     head = (f"Diario desde el {_short(ev.first_day)}: {ev.days} día{'s' * (ev.days != 1)} "
-            f"apuntado{'s' * (ev.days != 1)} y {ev.ideas} ideas.")  # fmt: skip
+            f"apuntado{'s' * (ev.days != 1)}, {ev.ideas} apuntes de ideas sobre {ev.symbols} "
+            f"valor{'es' * (ev.symbols != 1)}.")  # fmt: skip
     out = [head]
     if not ev.ready:
         due = ev.first_due.get(21)
-        when = f" Los primeros casos a 1 mes se cumplen hacia el {_short(due)}." if due else ""
+        best = max((r.n for r in ev.results if r.h == 21), default=0)
+        if due and ev.today and due > ev.today:
+            when = f" Los primeros casos a 1 mes se cumplen hacia el {_short(due)}."
+        elif due:
+            when = f" A 1 mes ya hay {best} de {MIN_CASES}."
+        else:
+            when = ""
         out.append(f"Aún no hay datos suficientes para evaluarlo: hacen falta al menos {MIN_CASES} "
                    f"casos independientes ya cumplidos a un plazo.{when}")  # fmt: skip
         return out
@@ -400,15 +434,16 @@ def evaluation_lines(ev: Evaluation) -> list[str]:
     for c in ev.calibration:
         if not c.ready:
             continue
-        lo, hi = wilson(c.deeper_drop, c.n)
         out.append(f"Rangos a {market.HORIZONS[c.h]}: cayó más que el «1 de cada 10» en "
-                   f"{c.deeper_drop} de {c.n} casos ({round(100 * c.deeper_drop / c.n)} %, entre "
-                   f"{round(lo)} y {round(hi)} %; lo ideal, 10 %). Acabó por debajo del rango "
-                   f"{c.below_low} veces y por encima {c.above_high}.")  # fmt: skip
+                   f"{_rate(c.deeper_drop, c.n)}; acabó por debajo del rango en "
+                   f"{_rate(c.below_low, c.n)} y por encima en {_rate(c.above_high, c.n)} "
+                   "(lo ideal, 10 % cada uno).")  # fmt: skip
     pending = [market.HORIZONS[h] for h in market.HORIZONS
                if not any(r.ready and r.h == h for r in ev.results)]  # fmt: skip
     if pending:
         out.append("Aún sin casos suficientes a " + " ni a ".join(pending) + ".")
-    out.append("Casos separados al menos un plazo entre sí por valor; cierres sin dividendos. "
-               "Pocos casos: tómalo como orientación, no como prueba.")  # fmt: skip
+    out.append("Casos separados al menos un plazo entre sí por valor. Las acciones van sin "
+               "dividendos y el índice, si es un ETF de acumulación, con ellos: la comparación "
+               "sale algo en contra de las ideas (1–2 puntos al año). Pocos casos: tómalo como "
+               "orientación, no como prueba.")  # fmt: skip
     return out

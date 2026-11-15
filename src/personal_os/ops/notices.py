@@ -208,7 +208,9 @@ def _regime_body(c: journal.RegimeChange) -> str:
         head = f"Se acaba {'el miedo' if c.before == 'miedo' else 'la euforia'}: el mercado vuelve a neutral."
     else:
         head = f"El mercado pasa a {c.after}" + (f": {', '.join(why[:2])}." if why else ".")
-    if c.after == "miedo" and not market.fear_edge():
+    if c.after == "miedo" and market.fear_edge():
+        tail = "Es contexto: la prueba histórica sugiere algo de ventaja, sin garantías."
+    elif c.after == "miedo":
         tail = "Es contexto, no una señal: en la prueba histórica entrar con miedo no dio ventaja."
     else:
         tail = "Es contexto, no una señal con ventaja."

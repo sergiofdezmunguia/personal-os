@@ -107,10 +107,11 @@ def test_sync_step_records_once_and_never_breaks(svc, clock, monkeypatch):
 # --------------------------------------------------------------------------- cambios de régimen
 
 
-def test_regime_changes_need_two_sessions_and_ignore_unknown(svc):
+def test_regime_changes_need_two_sessions_in_a_row(svc):
     seq = [("2026-09-01", "neutral"), ("2026-09-02", "miedo"),  # una sola sesión: ruido
-           ("2026-09-03", "neutral"), ("2026-09-04", "desconocido"),
-           ("2026-09-07", "miedo"), ("2026-09-08", "desconocido"), ("2026-09-09", "miedo")]  # fmt: skip
+           ("2026-09-03", "neutral"), ("2026-09-04", "miedo"),
+           ("2026-09-07", "desconocido"),  # rompe la racha
+           ("2026-09-08", "miedo"), ("2026-09-09", "miedo")]  # fmt: skip
     for d, label in seq:
         add_day(svc, d, label)
     [c] = journal.regime_changes(svc)
@@ -119,9 +120,29 @@ def test_regime_changes_need_two_sessions_and_ignore_unknown(svc):
     add_day(svc, "2026-09-12", "neutral", regime_day="2026-09-11")
     add_day(svc, "2026-09-13", "neutral", regime_day="2026-09-11")
     assert len(journal.regime_changes(svc)) == 1
+    # Dos sesiones de neutral, pero recién cambiado: sin ida y vuelta hasta pasadas 5 sesiones.
     add_day(svc, "2026-09-14", "neutral")
+    assert len(journal.regime_changes(svc)) == 1
+    for d in ("2026-09-15", "2026-09-16"):
+        add_day(svc, d, "neutral")
+    assert len(journal.regime_changes(svc)) == 1
+    add_day(svc, "2026-09-17", "neutral")
     c = journal.regime_changes(svc)[-1]
-    assert (c.before, c.after) == ("miedo", "neutral")
+    assert (c.before, c.after, c.day) == ("miedo", "neutral", "2026-09-17")
+
+
+def test_regime_flapping_gives_few_changes_and_gaps_break_streaks(svc):
+    labels = ["neutral", "miedo", "miedo", "neutral", "neutral", "miedo", "miedo", "neutral",
+              "neutral"]  # fmt: skip
+    for d, label in zip(business_days("2026-09-01", 9), labels, strict=True):
+        add_day(svc, d, label)
+    assert len(journal.regime_changes(svc)) <= 2  # no cuatro avisos en nueve sesiones
+
+
+def test_gap_in_journal_is_not_two_sessions_in_a_row(svc):
+    for d, label in (("2026-09-01", "neutral"), ("2026-09-02", "miedo"), ("2026-10-20", "miedo")):
+        add_day(svc, d, label)
+    assert journal.regime_changes(svc) == []
 
 
 def test_first_regime_is_baseline(svc):
@@ -162,9 +183,9 @@ def test_regime_notice_texts_for_euphoria_and_back_to_neutral(svc):
     n = notices.regime(svc, datetime(2026, 9, 3, 9, 0, tzinfo=TZ))
     assert n["title"] == "🧭 Mercado eufórico" and "pasa a euforia: VIX en 12." in n["body"]
     assert "contexto, no una señal con ventaja" in n["body"]
-    add_day(svc, "2026-09-04", "neutral")
-    add_day(svc, "2026-09-07", "neutral")
-    n = notices.regime(svc, datetime(2026, 9, 7, 9, 0, tzinfo=TZ))
+    for d in ("2026-09-04", "2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10"):
+        add_day(svc, d, "neutral")
+    n = notices.regime(svc, datetime(2026, 9, 10, 9, 0, tzinfo=TZ))
     assert n["title"] == "🧭 Mercado en calma"
     assert n["body"].startswith("Se acaba la euforia: el mercado vuelve a neutral.")
 
@@ -272,3 +293,27 @@ def test_cli_journal_prints_entries_and_evaluation(svc):
     assert res.exit_code == 0, res.output
     assert "2026-10-01  mercado miedo" in res.output and "FAKE Eval" in res.output
     assert "Aún no hay datos suficientes" in res.output
+
+
+def test_sell_idea_is_recorded_without_its_reason(prices, monkeypatch):
+    """Una idea de venta (sin señal propia) toma la sesión de su último cierre y no guarda el
+    motivo («ganas un…»), que habla de la posición del usuario."""
+    o = satellite.overview(prices, CFG, today=TODAY, monthly_expense_cents=1000)
+    corp = next(i for i in o.ideas if i.name == "FAKE Corp")
+    sell = dataclasses.replace(corp, kind="vender", reason="Ganas un 31 %: objetivo alcanzado.",
+                               amount_cents=987654, isin="XF000FAKE099")  # fmt: skip
+    o = dataclasses.replace(o, ideas=[sell])
+    assert journal.record(prices, o, CFG.benchmark, day=TODAY, recorded_at="x") == 1
+    [i] = journal.entries(prices)[0].ideas
+    assert i["kind"] == "vender" and i["price_day"] == TODAY
+    dump = json.dumps(i)
+    assert "Ganas" not in dump and "987654" not in dump
+
+
+def test_not_ready_says_how_many_cases_once_due(svc):
+    days, px = _market(svc, n=80)
+    for d in days[:3]:
+        add_day(svc, d, "neutral", ideas=[{"price": px[d]}])
+    lines = journal.evaluate(svc, today=days[-1]).lines()
+    assert "A 1 mes ya hay 1 de 10." in lines[1] and "se cumplen hacia" not in lines[1]
+    assert "3 apuntes de ideas sobre 1 valor." in lines[0]
