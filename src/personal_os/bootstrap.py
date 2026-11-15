@@ -288,7 +288,41 @@ def run_sync(application: App, *, only: str | None = None, push: bool = True) ->
             report = update_prices(application)
             if report is not None:
                 outcome.reports.append(report)
+            report = satellite_journal(application)
+            if report is not None:
+                outcome.reports.append(report)
     return outcome
+
+
+def satellite_journal(application: App):
+    """Apunta en el diario del satélite lo que dice hoy (ADR 0016): una vez al día, en la
+    primera sync tras descargar los precios. None si no hay satélite, si ya está apuntado o si
+    aún no hay cierres. Nunca interrumpe la sync: un fallo es un error del informe."""
+    from personal_os.core.ids import new_id
+    from personal_os.finance import insights, journal, satellite
+    from personal_os.sync.store import SyncReport
+
+    sat = application.config.finance.satellite
+    if not sat.enabled:
+        return None
+    now = application.clock.now()
+    today = now.astimezone(ZoneInfo(application.config.timezone)).date().isoformat()
+    report = SyncReport(run_id=new_id("correlation"), provider="satellite_journal")
+    try:
+        svc = finance_service(application)
+        if journal.recorded(svc, today):
+            return None
+        habit = insights.build(svc, today=today).habit.expense_cents
+        o = satellite.overview(svc, sat, today=today, monthly_expense_cents=habit)
+        if not o.signals:
+            return None  # sin cierres todavía: nada que apuntar
+        n = journal.record(svc, o, sat.benchmark, day=today,
+                           recorded_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"))  # fmt: skip
+    except Exception as exc:  # el diario es un extra: la sync ya terminó bien
+        report.errors.append(f"No se pudo apuntar el diario del satélite: {exc}")
+        return report
+    report.stats["ideas"] = n or 0
+    return report
 
 
 PRICES_MIN_HOURS = 6  # como mucho una descarga de cotizaciones cada 6 h

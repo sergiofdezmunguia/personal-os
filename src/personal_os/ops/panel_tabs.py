@@ -15,7 +15,7 @@ import html
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from personal_os.finance import analyst, backtest, investments, market, satellite
+from personal_os.finance import analyst, backtest, investments, journal, market, satellite
 from personal_os.finance.insights import Panel
 from personal_os.habits import health
 
@@ -55,6 +55,7 @@ class Extras:
     habits_file: bool = False
     satellite: satellite.Overview | None = None
     backtest: backtest.Result | None = None
+    journal: journal.Evaluation | None = None
 
 
 def build_extras(
@@ -66,6 +67,7 @@ def build_extras(
     health_text: str | None,
     sat: satellite.Overview | None = None,
     test: backtest.Result | None = None,
+    diary: journal.Evaluation | None = None,
 ) -> Extras:
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     summary = None
@@ -82,6 +84,7 @@ def build_extras(
         habits_file=health_text is not None,
         satellite=sat,
         backtest=test,
+        journal=diary,
     )
 
 
@@ -378,6 +381,8 @@ def tab_ideas(x: Extras) -> str:
           </div>
           <p class="hero-of">Con {eur(r.trade_cents)} por operación: {eur(r.pnl_cents, sign=True)} ({eur(r.net_cents, sign=True)} tras IRPF){vs}.</p>
           <p class="small0 warnline">⚠ Ojo: la lista son empresas que hoy sabemos que fueron ganadoras. Con las mismas reglas sobre grandes valores a los que les fue mal (Intel, PayPal, Nike, Bayer…) se acierta 1 de cada 3 y se pierde dinero. La ventaja está en elegir bien qué comprar, no en la caída.</p></div>""")  # fmt: skip
+    if x.journal is not None and x.journal.ready:
+        parts.append(_journal_card(x.journal))
     parts.append(
         '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. La lectura de mercado y los rangos salen de la historia: son probabilidades, no predicciones. Las órdenes las das tú en Trade Republic.</p>'
     )
@@ -402,6 +407,14 @@ def _regime_card(r: market.Regime) -> str:
       <p class="hero-of">{esc(r.summary)}</p>{edge}
       <details><summary>Los indicadores</summary><div class="list">{comps}</div></details>
       <details><summary>¿Sirve para entrar mejor? Lo que dice la historia</summary>{ev}</details></div>"""  # fmt: skip
+
+
+def _journal_card(ev: journal.Evaluation) -> str:
+    """Discreta: solo aparece cuando el diario ya tiene casos suficientes a algún plazo."""
+    lines = ev.lines()
+    rest = "".join(f'<p class="small0">{esc(line)}</p>' for line in lines[1:])
+    return f"""<div class="panel"><details><summary>¿Acierta el satélite? Su diario, fuera de muestra</summary>
+      <p class="muted small0">{esc(lines[0])}</p>{rest}</details></div>"""  # fmt: skip
 
 
 def _watch_extra(v: market.View | None, s: satellite.Signal) -> str:
