@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite) y 0015 (lectura de mercado).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite), 0015 (lectura de mercado) y 0016 (diario del satélite).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -104,6 +104,8 @@ Reglas impuestas por `lint-imports`:
   Lectura de mercado (ADR 0015): `finance/market.py` (régimen, tendencia, rangos, tramos; puro)
   y `finance/market_backtest.py` + `scripts/market_backtest.py` (prueba con datos públicos,
   resultado en `market.EVIDENCE`). Umbrales fijados a priori: no ajustarlos a los datos.
+  Diario (ADR 0016): `finance/journal.py` (una vez al día en `pos sync`, sin importes;
+  evaluación fuera de muestra en `pos finance journal`) y aviso de cambio de régimen en `ops/notices.py`.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
   de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.

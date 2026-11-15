@@ -561,6 +561,41 @@ def ideas_cmd() -> None:
                "Los rangos son probabilidades sacadas de la historia, no predicciones.")  # fmt: skip
 
 
+@app.command("journal")
+def journal_cmd(
+    days: int = typer.Option(5, "--days", help="Cuántos días del diario enseñar"),
+) -> None:
+    """Diario del satélite (ADR 0016): lo que dijo cada día y, cuando haya casos suficientes,
+    cómo le fue a 1, 3 y 12 meses frente al índice y si sus rangos aciertan."""
+    from personal_os.finance import journal
+
+    application = wiring.open_app()
+    try:
+        tz = ZoneInfo(application.config.timezone)
+        today = application.clock.now().astimezone(tz).date().isoformat()
+        svc = wiring.finance_service(application)
+        recent = journal.entries(svc)[-days:] if days > 0 else []
+        ev = journal.evaluate(svc, today=today)
+    finally:
+        application.db.close()
+    for e in recent:
+        typer.echo(f"{e.day}  mercado {e.regime}")
+        for i in e.ideas:
+            mark = "*" if i["top"] else " "
+            tr = (
+                " · tramos " + ", ".join(f"{t['price']:.2f}" for t in i["tranches"])
+                if len(i["tranches"]) >= 2
+                else ""
+            )
+            typer.echo(
+                f"  {mark} {i['kind']:<8} {i['name'][:30]:<30} {i['price']} € ({i['price_day']}){tr}"
+            )
+    if recent:
+        typer.echo("  (* = en el top del panel)")
+    for line in ev.lines():
+        typer.echo(line)
+
+
 @app.command("backtest")
 def backtest_cmd(
     dip: float | None = typer.Option(None, "--dip", help="% de caída para entrar"),

@@ -9,6 +9,8 @@ día). Sin servidor ni push: si el PC no sincroniza, no hay avisos nuevos.
 - **Resumen semanal** (domingo 19:00 – lunes 11:00): la semana frente a la habitual.
 - **Alertas** (3 días): subidas de cuotas, cobros recurrentes nuevos, posibles duplicados y
   renovaciones anuales próximas.
+- **Mercado** (3 días, ADR 0016): el régimen pasa a miedo o a euforia, o vuelve a neutral,
+  confirmado dos sesiones seguidas en el diario del satélite. Un aviso por cambio.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from personal_os.finance import analyst
+from personal_os.finance import analyst, journal, market
 
 FILE = "avisos.json"
 MORNING = (time(7, 0), time(12, 30))
@@ -195,9 +197,41 @@ def ideas(sat, now: datetime) -> list[dict]:
     return out
 
 
+REGIME_TITLE = {"miedo": "🧭 Mercado con miedo", "euforia": "🧭 Mercado eufórico",
+                "neutral": "🧭 Mercado en calma"}  # fmt: skip
+
+
+def _regime_body(c: journal.RegimeChange) -> str:
+    side = -1 if c.after == "miedo" else 1 if c.after == "euforia" else 0
+    why = [i["text"] for i in c.indicators if side and i.get("vote") == side and i.get("text")]
+    if c.after == "neutral":
+        head = f"Se acaba {'el miedo' if c.before == 'miedo' else 'la euforia'}: el mercado vuelve a neutral."
+    else:
+        head = f"El mercado pasa a {c.after}" + (f": {', '.join(why[:2])}." if why else ".")
+    if c.after == "miedo" and not market.fear_edge():
+        tail = "Es contexto, no una señal: en la prueba histórica entrar con miedo no dio ventaja."
+    else:
+        tail = "Es contexto, no una señal con ventaja."
+    return f"{head} {tail} Tus reglas no cambian."
+
+
+def regime(svc, now: datetime) -> dict | None:
+    """El último cambio de régimen confirmado, durante `ALERT_DAYS` días (id estable: el iPhone
+    lo muestra una vez). El estado es el diario del satélite: nada se repite en cada sync."""
+    changes = journal.regime_changes(svc)
+    if not changes:
+        return None
+    c = changes[-1]
+    since = (now.date() - timedelta(days=ALERT_DAYS)).isoformat()
+    if c.day < since:
+        return None
+    return _notice(f"regimen:{c.after}:{c.regime_day or c.day}", REGIME_TITLE[c.after],
+                   _regime_body(c), now, now + timedelta(days=ALERT_DAYS), kind="mercado")  # fmt: skip
+
+
 def build(svc, panel, now: datetime, *, satellite=None) -> list[dict]:
     items = [morning(svc, panel, now), weekly(svc, panel, now), *alerts(svc, now),
-             *ideas(satellite, now)]  # fmt: skip
+             *ideas(satellite, now), regime(svc, now) if satellite is not None else None]  # fmt: skip
     return [n for n in items if n]
 
 
