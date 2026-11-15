@@ -442,8 +442,12 @@ def ideas(
                         f"Sale de tu colchón: tras esta compra (y las de arriba) te quedarían {months:.1f} meses "
                         f"de gasto en efectivo (tu objetivo son {cfg.emergency_months:g})."
                     )
+            # Qué cumple de la regla, sin llamarlo «tendencia» (la vista de tendencia puede decir
+            # «medio bajista» a la vez y parecería una contradicción).
+            base = ("sobre su media de 200 sesiones" if s.sma200 is not None and s.price >= s.sma200
+                    else "bajo su media de 200 sesiones, pero esta sigue subiendo")  # fmt: skip
             out.append(Idea(kind, s.isin, s.name, s.symbol, s.price,
-                            reason + " · tendencia de fondo sana", amount if kind == "comprar" else 0,
+                            reason + " · " + base, amount if kind == "comprar" else 0,
                             stop, target, warn))  # fmt: skip
         else:
             out.append(Idea("vigilar", s.isin, s.name, s.symbol, s.price,
