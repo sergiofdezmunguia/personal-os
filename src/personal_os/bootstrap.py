@@ -329,33 +329,67 @@ def update_prices(application: App, *, force: bool = False, client=None):
     report.stats["isins"] = len(isins)
     report.stats["prices_new"] = investments.store_prices(svc, rows, fetched_at=stamp)
     if sat.enabled:
+        from zoneinfo import ZoneInfo
+
+        today = now.astimezone(ZoneInfo(application.config.timezone)).date().isoformat()
         report.stats["market_prices_new"] = _update_market_prices(
-            svc, sat, client, report, stamp=stamp
+            svc, sat, client, report, stamp=stamp, today=today
         )
     return report
 
 
-def _update_market_prices(svc, sat, client, report, *, stamp: str) -> int:
-    """Histórico de la lista de seguimiento y del índice de referencia (ADR 0014): la primera
-    vez 5 años (para comparar operaciones antiguas con el índice), después el último mes."""
-    from personal_os.adapters.quotes import QuoteError, history
-    from personal_os.finance import satellite
+def _update_market_prices(svc, sat, client, report, *, stamp: str, today: str) -> int:
+    """Histórico de la lista de seguimiento y del índice de referencia (ADR 0014) y de los
+    indicadores de mercado (ADR 0015). Cada símbolo se descarga entero una vez (para los rangos
+    estimados hace falta historia larga; se apunta en `sync_cursors`) y después lo justo para
+    cubrir el hueco desde el último cierre guardado. Solo se envían símbolos públicos. Un fallo
+    es un aviso: el régimen queda «desconocido»."""
+    from datetime import date
 
+    from personal_os.adapters.quotes import QuoteError, breadth_history, history
+    from personal_os.finance import market, satellite
+    from personal_os.sync.store import Cursors
+
+    cursors = Cursors(svc.db)
     new = 0
-    for symbol in [w.symbol for w in sat.watch] + [sat.benchmark]:
-        range_ = "1mo" if satellite.history_start(svc, symbol) else "5y"
+    watch = [w.symbol for w in sat.watch] + [sat.benchmark]
+    for symbol in watch + list(market.REGIME_SYMBOLS):
+        deep = cursors.get("market", f"full:{symbol}") is None
+        range_ = "max" if deep else _gap_range(satellite.history_end(svc, symbol), today, date)
         try:
             h = history(client, symbol, range_=range_)
         except QuoteError as exc:
             report.errors.append(str(exc))
             continue
-        if h.currency != "EUR":
+        if symbol in watch and h.currency != "EUR":
             report.errors.append(
                 f"{symbol} cotiza en {h.currency}, no en EUR: usa su símbolo de Xetra"
             )
+            cursors.set("market", f"full:{symbol}", stamp)  # no repetir la descarga larga
             continue
         new += satellite.store_history(svc, symbol, h.currency, h.closes, fetched_at=stamp)
+        if deep:
+            cursors.set("market", f"full:{symbol}", stamp)
+    try:
+        h = breadth_history(client)
+        new += satellite.store_history(svc, h.symbol, h.currency, h.closes[-400:], fetched_at=stamp)
+    except QuoteError as exc:
+        report.warnings.append(f"{exc}: la lectura de mercado irá sin amplitud")
+    reg = satellite.market_regime(svc, today=today)
+    report.stats["market_regime"] = reg.label
+    if reg.label == "desconocido":
+        report.warnings.append(
+            "Lectura de mercado desconocida: faltan datos de " + ", ".join(reg.missing)
+        )
     return new
+
+
+def _gap_range(last: str | None, today: str, date) -> str:
+    """Rango de Yahoo que cubre el hueco desde el último cierre guardado."""
+    if last is None:
+        return "max"
+    gap = (date.fromisoformat(today) - date.fromisoformat(last)).days
+    return "1mo" if gap <= 25 else "3mo" if gap <= 80 else "1y" if gap <= 350 else "max"
 
 
 def applepay_enrich(application: App):

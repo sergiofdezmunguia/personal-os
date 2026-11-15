@@ -506,7 +506,7 @@ def prices(
 def ideas_cmd() -> None:
     """Satélite por reglas (ADR 0014): presupuesto, ideas de compra/venta sobre la lista de
     seguimiento, impuestos del año y comparación con el índice. Son ideas, no órdenes."""
-    from personal_os.finance import insights, satellite
+    from personal_os.finance import insights, market, satellite
 
     application = wiring.open_app()
     try:
@@ -529,6 +529,14 @@ def ideas_cmd() -> None:
                f"({cfg.emergency_months:g} meses) − plan {fmt_eur(b.plan_cents)} = {fmt_eur(b.free_cash_cents)}")  # fmt: skip
     if b.why_zero:
         typer.echo(f"  {b.why_zero}")
+    if o.regime is not None:
+        typer.echo(f"Mercado: {o.regime.label.upper()} · {o.regime.summary}")
+        for c in o.regime.components:
+            vote = "miedo" if c.vote < 0 else "euforia" if c.vote > 0 else "—"
+            typer.echo(f"  {c.label:<42} {vote:<8} {c.text}")
+        if not market.fear_edge():
+            typer.echo("  Ojo: en la prueba histórica, leer el miedo no sirvió para entrar mejor "
+                       "(contexto, no ventaja).")  # fmt: skip
     for i in o.ideas:
         amount = f" · {fmt_eur(i.amount_cents)}" if i.amount_cents else ""
         levels = (
@@ -537,6 +545,11 @@ def ideas_cmd() -> None:
         typer.echo(f"{i.kind.upper():<8} {i.name}: {i.price} € · {i.reason}{amount}{levels}")
         for w in i.warnings:
             typer.echo(f"         ⚠ {w}")
+        for c in i.context:
+            typer.echo(f"         · {c}")
+        for n, t in enumerate(i.tranches if len(i.tranches) >= 2 else [], 1):
+            amount = f" · {fmt_eur(t.amount_cents)}" if t.amount_cents else ""
+            typer.echo(f"         tramo {n}: {t.price:.2f} € {t.label}{amount}")
     t = o.taxes
     typer.echo(f"Impuestos {t.year}: ganancias realizadas {fmt_eur(t.realized_cents)} + dividendos "
                f"{fmt_eur(t.dividends_cents)} → unos {fmt_eur(t.tax_cents)} de IRPF")  # fmt: skip
@@ -544,7 +557,8 @@ def ideas_cmd() -> None:
         v = o.versus
         typer.echo(f"Frente al índice desde {v.since}: satélite {fmt_eur(v.satellite_cents)} vs "
                    f"{fmt_eur(v.benchmark_cents)} ({fmt_eur(v.diff_cents)})")  # fmt: skip
-    typer.echo("Ideas por reglas, no recomendaciones: las órdenes las das tú en tu bróker.")
+    typer.echo("Ideas por reglas, no recomendaciones: las órdenes las das tú en tu bróker. "
+               "Los rangos son probabilidades sacadas de la historia, no predicciones.")  # fmt: skip
 
 
 @app.command("backtest")

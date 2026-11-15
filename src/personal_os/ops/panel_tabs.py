@@ -15,7 +15,7 @@ import html
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from personal_os.finance import analyst, backtest, investments, satellite
+from personal_os.finance import analyst, backtest, investments, market, satellite
 from personal_os.finance.insights import Panel
 from personal_os.habits import health
 
@@ -291,6 +291,8 @@ def tab_ideas(x: Extras) -> str:
         <div class="fact"><div class="k">Tope del satélite</div><div class="v">{eur(b.cap_cents)}</div><div class="n">invertido {eur(b.invested_cents)}</div></div>
         <div class="fact"><div class="k">Efectivo libre</div><div class="v">{eur(b.free_cash_cents)}</div><div class="n">tras colchón {eur(b.emergency_cents)} y plan {eur(b.plan_cents)}</div></div>
       </div>{why}</div>"""]  # fmt: skip
+    if o.regime is not None:
+        parts.append(_regime_card(o.regime))
     cards = []
     for n, i in enumerate(o.top, 1):
         cls, label = KIND[i.kind]
@@ -307,6 +309,17 @@ def tab_ideas(x: Extras) -> str:
             per = "" if i.amount_cents else f" (por cada {eur(out.amount_cents)})"
             levels += (f'<p class="small0">Si llega al objetivo: <b class="up-good">{eur(out.gain_cents, sign=True)}</b> netos'
                        f' · si salta el stop: <b class="down-bad">{eur(-out.loss_cents)}</b>{per}</p>')  # fmt: skip
+        ctx = "".join(f'<p class="muted small0">{esc(c)}</p>' for c in i.context)
+        if len(i.tranches) >= 2:
+            rows = "".join(
+                f"<li>{_price(t.price)} {esc(t.label)}"
+                + (f" · <b>{eur(t.amount_cents)}</b>" if t.amount_cents else "")
+                + "</li>"
+                for t in i.tranches
+            )
+            ctx += (f'<p class="small0">Si quieres entrar por tramos (mismo importe, repartido):</p>'
+                    f'<ol class="small0">{rows}</ol>')  # fmt: skip
+        levels += ctx
         rank = f"{n}. " if i.kind != "vender" else ""
         cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{rank}{esc(i.name)}</h3>
           <span class="pill {cls}">{label}</span></div>
@@ -327,7 +340,8 @@ def tab_ideas(x: Extras) -> str:
         )
     rows = "".join(
         f'<div class="li"><span>{esc(s.name)}<small>RSI {f"{s.rsi14:.0f}" if s.rsi14 is not None else "—"} · '
-        f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200</small></span>"
+        f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200"
+        f"{_watch_extra(o.views.get(s.isin), s)}</small></span>"
         f'<span class="num">−{s.drawdown:.0f} %</span></div>'
         for s in sorted(o.signals, key=lambda s: -s.drawdown)
     )
@@ -365,9 +379,39 @@ def tab_ideas(x: Extras) -> str:
           <p class="hero-of">Con {eur(r.trade_cents)} por operación: {eur(r.pnl_cents, sign=True)} ({eur(r.net_cents, sign=True)} tras IRPF){vs}.</p>
           <p class="small0 warnline">⚠ Ojo: la lista son empresas que hoy sabemos que fueron ganadoras. Con las mismas reglas sobre grandes valores a los que les fue mal (Intel, PayPal, Nike, Bayer…) se acierta 1 de cada 3 y se pierde dinero. La ventaja está en elegir bien qué comprar, no en la caída.</p></div>""")  # fmt: skip
     parts.append(
-        '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. Las órdenes las das tú en Trade Republic.</p>'
+        '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. La lectura de mercado y los rangos salen de la historia: son probabilidades, no predicciones. Las órdenes las das tú en Trade Republic.</p>'
     )
     return f'<section class="view" id="v-ideas" aria-label="Ideas"><h2>Ideas</h2>{"".join(parts)}</section>'
+
+
+REGIME = {"miedo": ("warn", "Miedo"), "euforia": ("warn", "Euforia"), "neutral": ("", "Neutral"),
+          "desconocido": ("", "Sin datos")}  # fmt: skip
+
+
+def _regime_card(r: market.Regime) -> str:
+    cls, label = REGIME[r.label]
+    comps = "".join(
+        f'<div class="li"><span>{esc(c.label)}<small>{esc(c.text)}</small></span>'
+        f'<span class="num">{"miedo" if c.vote < 0 else "euforia" if c.vote > 0 else "—"}</span></div>'
+        for c in r.components
+    )
+    ev = "".join(f'<p class="small0">{esc(line)}</p>' for line in market.evidence_lines())
+    edge = ("" if market.fear_edge() else
+            '<p class="small0 warnline">⚠ Leer el miedo no ha servido para entrar mejor: es contexto, no una señal con ventaja.</p>')  # fmt: skip
+    return f"""<div class="panel"><div class="row-between"><h3>Cómo está el mercado</h3><span class="pill {cls}">{label}</span></div>
+      <p class="hero-of">{esc(r.summary)}</p>{edge}
+      <details><summary>Los indicadores</summary><div class="list">{comps}</div></details>
+      <details><summary>¿Sirve para entrar mejor? Lo que dice la historia</summary>{ev}</details></div>"""  # fmt: skip
+
+
+def _watch_extra(v: market.View | None, s: satellite.Signal) -> str:
+    if v is None:
+        return ""
+    t = v.trend
+    out = f" · largo {t.long}" if t.long else ""
+    if v.entry_from is not None and float(s.price) > v.entry_from:
+        out += f" · la regla se activaría bajo {_price(v.entry_from)}"
+    return out
 
 
 # --------------------------------------------------------------------------- estilos y JS
