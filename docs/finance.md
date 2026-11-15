@@ -250,6 +250,17 @@ entrada** de forma demostrable, que esperar a que haya miedo rinde menos que com
 y que los rangos a 1 y 3 meses están bien calibrados (a 12 meses, cortos). El panel lo enseña
 tal cual. Si se cambia un umbral, hay que repetir la prueba y actualizar `market.EVIDENCE`.
 
+### Diario del satélite y avisos de mercado (ADR 0016)
+
+Cada día, la primera `pos sync` apunta lo que dijo el satélite: el régimen con sus indicadores y,
+por idea, tipo, precio, rangos y tramos (nunca importes ni nada de tu patrimonio). `pos finance
+journal` enseña los últimos días y, cuando hay al menos 10 casos independientes cumplidos, cómo
+les fue a 1, 3 y 12 meses frente al índice y si los rangos aciertan; hasta entonces lo dice. En
+la pestaña Ideas aparece una tarjeta plegada solo cuando ya hay algo que enseñar.
+
+Cuando el mercado pasa a miedo o a euforia (o vuelve a neutral) y se confirma dos sesiones
+seguidas, llega un aviso al iPhone, una sola vez, recordando que es contexto y no una señal.
+
 ## Qué vigila `pos doctor` en la cartera
 
 Tres áreas, sin red, sin escribir y sin gastar cupo del banco. Son avisos (`!`): no cambian el
