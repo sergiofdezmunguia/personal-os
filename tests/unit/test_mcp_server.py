@@ -123,3 +123,10 @@ def test_sync_apple_reaches_the_iphone(server, device):
     occ_id = call(server, "list_tasks")["tasks"][0]["open_occurrence_id"]
     assert device.by_marker(occ_id)["title"] == "Desde Claude"
     assert created["title"] == "Desde Claude"
+
+
+def test_default_dates_follow_the_app_clock_not_the_system(server):
+    # El reloj fijo dice lunes 5-oct-2026: «hoy» y el mes por defecto salen de él.
+    assert call(server, "list_tasks")["today"] == "2026-10-05"
+    assert call(server, "list_calendar_events")["today"] == "2026-10-05"
+    assert call(server, "finance_summary")["month"] == "2026-10"
