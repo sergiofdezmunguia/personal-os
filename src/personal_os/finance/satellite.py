@@ -85,7 +85,7 @@ def market_views(svc: FinanceService, cfg, *, today: str) -> dict[str, market.Vi
     """Tendencia, rangos estimados y nivel de entrada de cada valor de la lista (por ISIN)."""
     out = {}
     for w in cfg.watch:
-        data = [(d, float(c)) for d, c in closes(svc, w.symbol, until=today, days=365 * 30)]
+        data = [(d, float(c)) for d, c in closes(svc, w.symbol, until=today, days=365 * 30 + 10)]
         if len(data) >= 20:
             out[w.isin] = market.view(w.symbol, [d for d, _ in data], [v for _, v in data],
                                       dip=cfg.dip)  # fmt: skip
@@ -101,9 +101,9 @@ def close_on(svc: FinanceService, symbol: str, day: str) -> Decimal | None:
     return Decimal(row["close"]) if row else None
 
 
-def history_start(svc: FinanceService, symbol: str) -> str | None:
+def history_end(svc: FinanceService, symbol: str) -> str | None:
     return svc.db.one(
-        "SELECT MIN(price_date) AS d FROM fin_market_prices WHERE symbol = ?", (symbol,)
+        "SELECT MAX(price_date) AS d FROM fin_market_prices WHERE symbol = ?", (symbol,)
     )["d"]
 
 
@@ -567,20 +567,25 @@ def with_market(idea: Idea, view: market.View | None, reg: market.Regime,
                    if market.fear_edge() else "Aun así, la prueba histórica no lo da como "
                    "ventaja demostrada."))  # fmt: skip
     elif reg.label == "euforia":
-        ctx.append("Mercado eufórico: prudencia, sin prisa y por tramos (el primero, más abajo "
-                   "del precio de hoy). En la prueba histórica entrar en euforia no fue peor que "
-                   "otro día: es cautela, no ventaja.")  # fmt: skip
+        ctx.append("Mercado eufórico: prudencia y sin prisa (ningún tramo a precio de hoy). En la "
+                   "prueba histórica entrar en euforia no fue peor que otro día: es cautela, no "
+                   "ventaja.")  # fmt: skip
     elif reg.label == "desconocido":
         ctx.append("Sin lectura de mercado ahora mismo (faltan datos).")
     ctx.append(view.trend.summary)
     r3 = next((r for r in view.ranges if r.h == 63), None)
     if r3:
         ctx.append(r3.text)
-    tr = market.tranches(
-        price=float(idea.price), vals=view.support_window,
-        ranges_=view.ranges, stop=float(idea.stop) if idea.stop is not None else None,
-        regime_label=reg.label, amount_cents=idea.amount_cents,
-    )  # fmt: skip
+    tr: list[market.Tranche] = []
+    if idea.kind == "comprar":  # «vigilar» dice esperar: sin niveles de compra
+        tr = market.tranches(
+            price=float(idea.price), vals=view.support_window,
+            ranges_=view.ranges, stop=float(idea.stop) if idea.stop is not None else None,
+            regime_label=reg.label, amount_cents=idea.amount_cents,
+        )  # fmt: skip
+        if reg.label == "euforia" and not tr:
+            ctx.append("Sin niveles claros por debajo de hoy y por encima del stop: en euforia, "
+                       "mejor esperar a que baje.")  # fmt: skip
     return dataclasses.replace(idea, context=ctx, tranches=tr)
 
 

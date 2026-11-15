@@ -170,7 +170,8 @@ def regime_from_values(
     comps.append(
         _component("drawdown", "Caída del S&P 500 desde máximos", dd,
                    dd is not None and dd >= DD_FEAR, False,
-                   f"S&P 500 a −{dd:.0f} % de su máximo de 52 semanas" if dd is not None else "")
+                   (f"S&P 500 a −{dd:.0f} % de su máximo de 52 semanas" if round(dd)
+                    else "S&P 500 en máximos") if dd is not None else "")
     )  # fmt: skip
     comps.append(
         _component("breadth", "Amplitud (valores sobre su media de 200)", breadth,
@@ -387,10 +388,11 @@ class Range:
 
     @property
     def text(self) -> str:
-        return (f"A {self.label}: en 1 de cada 10 casos parecidos llegó a caer más de "
-                f"{abs(round(self.drop))} % en algún momento y en 1 de cada 10 llegó a subir más "
-                f"de {round(self.rise)} %. 8 de cada 10 acabaron entre {pct(self.end_low)} y "
-                f"{pct(self.end_high)}.")  # fmt: skip
+        drop = (f"llegó a caer más de {abs(round(self.drop))} % en algún momento"
+                if round(self.drop) < 0 else "apenas cayó")  # fmt: skip
+        return (f"A {self.label}: en 1 de cada 10 casos parecidos {drop} y en 1 de cada 10 llegó "
+                f"a subir más de {round(self.rise)} %. 8 de cada 10 acabaron entre "
+                f"{pct(self.end_low)} y {pct(self.end_high)}.")  # fmt: skip
 
 
 def _to_pct(z: float, k: float) -> float:
@@ -456,7 +458,7 @@ def tranches(
 ) -> list[Tranche]:
     """Hasta tres niveles escalonados para repartir (nunca ampliar) el importe de la idea:
     hoy, el soporte de las últimas 120 sesiones y la caída «1 de cada 10» a 3 meses. Ninguno por
-    debajo del stop. En euforia no se propone tramo a precio de hoy."""
+    debajo del stop. En euforia no se propone tramo a precio de hoy (puede quedar vacío)."""
     cands: list[tuple[float, str]] = [(price, "a precio de hoy")]
     if len(vals) >= SUPPORT_WINDOW:
         cands.append((min(vals[-SUPPORT_WINDOW:]), "en el mínimo de los últimos 6 meses"))
@@ -472,8 +474,8 @@ def tranches(
         if levels and lvl > levels[-1][0] * (1 - MIN_GAP):
             continue
         levels.append((lvl, label))
-    if regime_label == "euforia" and len(levels) > 1 and levels[0][1] == "a precio de hoy":
-        levels = levels[1:]
+    if regime_label == "euforia" and levels and levels[0][1] == "a precio de hoy":
+        levels = levels[1:]  # prudencia: en euforia nada a precio de hoy
     levels = levels[:3]
     if not levels:
         return []
@@ -591,9 +593,9 @@ def evidence_lines(ev: dict | None = None) -> list[str]:
     if d:
         diff = round(100 * (d["ratio"] - 1))
         out.append(
-            f"Guardar el dinero hasta que haya miedo acabó con un {abs(diff)} % "
-            f"{'menos' if diff < 0 else 'más'} que comprar cada mes (ganó en {d['gana']} de "
-            f"{d['de']} series). Para el núcleo, el plan mensual sigue siendo lo mejor."
+            f"Guardar el dinero hasta que haya miedo con tendencia sana acabó con un {abs(diff)} % "
+            f"{'menos' if diff < 0 else 'más'} que comprar cada mes (esperar ganó en {d['gana']} "
+            f"de {d['de']} series)."
         )
     t = ev.get("tramos")
     if t:
@@ -604,12 +606,14 @@ def evidence_lines(ev: dict | None = None) -> list[str]:
         )
     c = ev.get("calibracion", {})
     if "21" in c and "63" in c:
-        line = (f"Los rangos a 1 y 3 meses salieron bien calibrados (cayó más que el «1 de cada "
-                f"10» el {round(c['21']['caida'])} % y el {round(c['63']['caida'])} % de las "
-                "veces).")  # fmt: skip
+        line = (f"Rangos a 1 y 3 meses: cayó más que el «1 de cada 10» el {round(c['21']['caida'])} % "
+                f"y el {round(c['63']['caida'])} % de las veces (lo ideal, 10 %); subió más que el "
+                f"suyo el {round(c['21']['subida'])} % y el {round(c['63']['subida'])} %: las "
+                "subidas se estiman algo largas.")  # fmt: skip
         if "252" in c:
-            line += (f" A 12 meses se quedaron cortos: {round(c['252']['caida'])} % en vez de "
-                     "10 %, y las subidas fueron menores de lo estimado.")  # fmt: skip
+            k = c["252"]
+            line += (f" A 12 meses, peor: cayó más de lo estimado el {round(k['caida'])} % de las "
+                     f"veces y subió más el {round(k['subida'])} %.")  # fmt: skip
         out.append(line)
     out.append(f"Prueba con {ev['series']} índices y valores grandes, {ev['periodo']}, "
                "con cierres sin dividendos.")  # fmt: skip

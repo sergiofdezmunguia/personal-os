@@ -310,7 +310,7 @@ def tab_ideas(x: Extras) -> str:
             levels += (f'<p class="small0">Si llega al objetivo: <b class="up-good">{eur(out.gain_cents, sign=True)}</b> netos'
                        f' · si salta el stop: <b class="down-bad">{eur(-out.loss_cents)}</b>{per}</p>')  # fmt: skip
         ctx = "".join(f'<p class="muted small0">{esc(c)}</p>' for c in i.context)
-        if i.tranches:
+        if len(i.tranches) >= 2:
             rows = "".join(
                 f"<li>{_price(t.price)} {esc(t.label)}"
                 + (f" · <b>{eur(t.amount_cents)}</b>" if t.amount_cents else "")

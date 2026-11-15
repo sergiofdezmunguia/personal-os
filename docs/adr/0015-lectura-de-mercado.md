@@ -51,7 +51,7 @@ Seis indicadores, cada uno vota miedo (−1), nada (0) o euforia (+1):
 
 ### 3. Rangos estimados de bajada y subida (1, 3 y 12 meses)
 
-Historia propia del valor (hasta 25 años; la primera descarga pasa a ser «máximo» y los valores
+Historia propia del valor (hasta 30 años; la primera descarga pasa a ser «máximo» y los valores
 ya guardados se completan una vez, apuntado en `sync_cursors`):
 
 - Para cada día pasado t: rendimiento final a h sesiones, peor caída y mayor subida dentro de
@@ -66,11 +66,14 @@ ya guardados se completan una vez, apuntado en `sync_cursors`):
 
 ### 4. Zonas de entrada
 
-- Hasta tres tramos iguales del importe que ya propone la regla (nunca más dinero): el precio
-  de hoy (o, si aún no cae lo bastante, el nivel donde la regla `dip` se cumple), el soporte
-  de las últimas 120 sesiones y el nivel de la caída «1 de cada 10» a 3 meses.
+- Solo en ideas «comprar» («vigilar» dice esperar). Hasta tres tramos iguales del importe que
+  ya propone la regla (nunca más dinero), elegidos entre: el precio de hoy, el mínimo de las
+  últimas 120 sesiones y los niveles de la caída «1 de cada 10» a 1 y a 3 meses, separados al
+  menos un 3 %. Se enseñan solo si salen dos o más. Para los valores de la lista que aún no han
+  caído lo bastante se enseña el precio en el que la regla `dip` se activaría.
 - Ningún tramo por debajo del stop: si se llega ahí, el plan es salir, no promediar.
-- Euforia: el primer tramo deja de ser «a precio de hoy» (prudencia) y se avisa. Miedo con
+- Euforia: nunca tramo «a precio de hoy» (prudencia); si no queda otro nivel, se dice que es
+  mejor esperar. Esta variante no está en la prueba histórica (que usa la neutral). Miedo con
   tendencia sana: se señala como contexto favorable **solo en la medida en que la prueba
   histórica lo respalde** (ver 5).
 - No cambian: núcleo intocable, colchón, tope, importe por operación, stop y objetivo.
@@ -126,7 +129,10 @@ VIX3M desde 2006; antes el régimen usa los indicadores que hay, mínimo 3).
   honda que la estimada el 10,4 %, por encima del 90 el 8,3 %; a 3 meses 11,1 / 10,9 / 7,2 %; a
   12 meses 12,7 / **15,0** / 4,6 %: a un año las caídas se quedan cortas y las subidas largas
   (la historia anterior a 2000 fue más alcista). Los intervalos de Wilson (p. ej. 9,8–11,1 % a
-  1 mes) no corrigen la correlación entre valores: son optimistas.
+  1 mes) no corrigen la correlación entre valores: son optimistas. Lo mismo el IC del DCA
+  (bootstrap por valores, que se mueven juntos). Todos los valores siguen cotizando hoy (no hay
+  Lehman ni Enron): queda algo de sesgo de supervivencia, que favorece a comprar caídas.
+  Tampoco se sabe si la amplitud de TraderMonty usa los componentes actuales del S&P 500.
 
 Conclusión: el régimen, la tendencia y los rangos **describen** bien el riesgo (1 y 3 meses),
 pero **no dan una ventaja para elegir el momento**. El panel lo dice así (`market.fear_edge()`
@@ -137,7 +143,8 @@ avisando de que es cautela y no ventaja.
 ## Consecuencias
 
 - Más descarga en la sync: 3 símbolos + 1 CSV (≈ 600 kB) cada 6 h como mucho, y una descarga
-  larga por valor la primera vez.
+  larga por valor la primera vez. Si pasa tiempo sin sync, se pide lo justo para cubrir el hueco
+  (1 mes, 3 meses, 1 año o todo). Los fallos de amplitud o de régimen son avisos, no errores.
 - El régimen es de EE. UU.; un valor europeo puede ir por libre.
 - Los umbrales son convenciones, no óptimos; cambiar uno exige repetir la prueba histórica.
 - Los rangos asumen que el pasado del valor es representativo: no ven quiebras ni cambios de

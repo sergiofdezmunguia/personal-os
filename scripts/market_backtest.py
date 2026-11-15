@@ -18,7 +18,8 @@ from personal_os.adapters.quotes import QuotesClient, breadth_history, history
 from personal_os.finance import market, market_backtest
 
 INDICES = ["^GSPC", "^NDX", "^DJI", "^RUT", "^STOXX50E", "^GDAXI", "^FTSE", "^N225", "^HSI"]
-# Valores grandes de 2000, incluidos los que luego fueron mal (sin sesgo de supervivencia).
+# Valores grandes de 2000, incluidos algunos que luego fueron mal. Todos siguen cotizando
+# (no hay Lehman ni Enron): queda algo de sesgo de supervivencia.
 STOCKS = ["AAPL", "MSFT", "AMZN", "JPM", "XOM", "JNJ", "KO", "PG", "WMT", "INTC", "GE", "C",
           "PFE", "IBM", "CSCO", "BA", "T", "BAC", "DIS", "MMM"]  # fmt: skip
 

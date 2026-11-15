@@ -163,7 +163,7 @@ def test_tranches_split_amount_and_respect_stop():
         price=100, vals=vals, ranges_=rs, stop=None, regime_label="neutral", amount_cents=0))  # fmt: skip
     only = market.tranches(price=100, vals=vals, ranges_=rs, stop=99.5, regime_label="euforia",
                            amount_cents=100)  # fmt: skip
-    assert [t.label for t in only] == ["a precio de hoy"]
+    assert only == []  # en euforia, nada a precio de hoy aunque no quede otro nivel
 
 
 def test_view_entry_level():

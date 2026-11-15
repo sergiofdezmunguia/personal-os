@@ -547,7 +547,7 @@ def ideas_cmd() -> None:
             typer.echo(f"         ⚠ {w}")
         for c in i.context:
             typer.echo(f"         · {c}")
-        for n, t in enumerate(i.tranches, 1):
+        for n, t in enumerate(i.tranches if len(i.tranches) >= 2 else [], 1):
             amount = f" · {fmt_eur(t.amount_cents)}" if t.amount_cents else ""
             typer.echo(f"         tramo {n}: {t.price:.2f} € {t.label}{amount}")
     t = o.taxes
