@@ -48,6 +48,9 @@ y Apple Calendario. Los datos viven en el Personal OS; Apple es la interfaz.
   pisa lo que el usuario puso a mano. Si no sabes qué es un comercio, pregunta.
 - Inversiones: investments_overview (cartera, plan de inversión, aportaciones y patrimonio
   neto). El valor de mercado sale solo de la valoración que sube el usuario (PDF de TR).
+- Modelo de categorías: model_category_suggestions da las propuestas del modelo aprendido para
+  lo que no tiene categoría (solo propone cuando está seguro). No las repitas con
+  categorize_transactions: díselas al usuario para que las apruebe.
 - Cierre mensual: finance_month_close dice si faltan extractos, qué queda sin categoría, la
   comparación con el mes anterior y si cuadran intereses y saveback.
 - Tras crear o modificar, llama a sync_apple. Calendario se actualiza al momento;
@@ -357,6 +360,49 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                 errors.append({"id": a.get("id"), "error": str(exc)})
         return {"categorized": done, "errors": errors}
 
+    @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
+    def model_category_suggestions(
+        month: str | None = None, refresh: bool = False
+    ) -> dict[str, Any]:
+        """Propuestas de categoría del modelo aprendido (ADR 0017) para movimientos sin
+        categoría: [{id, category, confidence, …}], las más seguras primero. Con refresh=true
+        reentrena con lo ya categorizado y recalcula las pendientes (unos segundos). Son
+        PROPUESTAS: no cambian ningún movimiento; solo el usuario las aprueba
+        (`pos finance suggestion approve …`). No las repitas con categorize_transactions."""
+        application = open_app()
+        svc = bootstrap.suggestion_service(application)
+        try:
+            run = svc.refresh(_ctx(), month=month) if refresh else None
+            items = svc.list(month=month)
+        except FinanceError as exc:
+            raise ToolError(str(exc)) from exc
+        out: dict[str, Any] = {
+            "suggestions": [
+                {
+                    "id": s.transaction.id,
+                    "booking_date": s.transaction.booking_date,
+                    "description": s.transaction.description,
+                    "amount_cents": s.transaction.amount_cents,
+                    "category": s.category,
+                    "confidence": s.confidence,
+                }
+                for s in items[:200]
+            ],
+            "total": len(items),
+            "truncated": len(items) > 200,
+            "approve_with": "pos finance suggestion approve --all"
+            + (f" -m {month}" if month else ""),
+        }
+        if run is not None:
+            out["model"] = dataclasses.asdict(run.report)
+            out["refresh"] = {
+                "candidates": run.candidates,
+                "proposed": run.proposed,
+                "abstained": run.abstained,
+                "skipped_reviewed": run.skipped_reviewed,
+            }
+        return out
+
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def finance_month_close(month: str | None = None) -> dict[str, Any]:
         """Estado del cierre de un mes (YYYY-MM; por defecto el anterior): extractos completos
@@ -382,6 +428,9 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "previous_net_cents": mc.previous.net_cents,
             "uncategorized": s.uncategorized,
             "categorized_by_claude": mc.by_claude,
+            "model_suggestions_pending": len(
+                bootstrap.suggestion_service(application).list(month=month)
+            ),
             "expense_deltas": [
                 {**dataclasses.asdict(d), "delta_cents": d.delta_cents} for d in mc.deltas
             ],

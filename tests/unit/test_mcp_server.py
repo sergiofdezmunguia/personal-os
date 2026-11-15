@@ -7,7 +7,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from personal_os import bootstrap
 from personal_os.core.config import write_config_template
-from personal_os.core.events import EventLog
+from personal_os.core.events import ChangeContext, EventLog
+from personal_os.finance.models import FinanceError
 from personal_os.mcp_server.server import build_server
 from tests.sim_device import SimDevice, requires_node
 
@@ -61,6 +62,7 @@ def test_exposes_minimal_toolset(server):
         "finance_recurring",
         "name_unlabeled_transaction",
         "satellite_overview",
+        "model_category_suggestions",
     }
     assert tools["list_tasks"].annotations.read_only_hint is True
     assert tools["investments_overview"].annotations.read_only_hint is True
@@ -172,3 +174,50 @@ def test_satellite_overview_includes_market_reading(clock):
     v = out["views"]["XF000FAKE009"]
     assert v["trend"]["long"] == "alcista" and v["entry_from"] == 85.0
     assert "no recomendaciones" in out["disclaimer"]
+
+
+def test_model_category_suggestions_only_proposes(server, clock):
+    """El MCP genera y lista propuestas del modelo, pero no categoriza ni aprueba nada."""
+    from tests import categorizer_fake
+
+    app = bootstrap.open_app(clock=clock)
+    try:
+        svc = bootstrap.finance_service(app)
+        examples = categorizer_fake.generate(240, seed=3)
+        svc.import_statement(
+            ChangeContext.cli(),
+            categorizer_fake.statement(examples),
+            file_name="f",
+            file_sha256="f",
+        )
+        txs = sorted(
+            svc.list_transactions(limit=None), key=lambda t: (t.booking_date, t.description)
+        )
+        by_key = {(x.booking_date, x.description, x.amount_cents): x.category for x in examples}
+        for t in txs[:200]:
+            svc.set_category(
+                ChangeContext.cli(), t.id, by_key[(t.booking_date, t.description, t.amount_cents)]
+            )
+    finally:
+        app.db.close()
+    out = call(server, "model_category_suggestions", refresh=True)
+    assert out["model"]["examples"] == 200 and out["refresh"]["candidates"] == 40
+    assert out["refresh"]["proposed"] == len(out["suggestions"]) > 0
+    first = out["suggestions"][0]
+    app = bootstrap.open_app(clock=clock)
+    try:
+        assert bootstrap.finance_service(app).get_transaction(first["id"]).category is None
+        with pytest.raises(FinanceError, match="solo las aprueba"):
+            bootstrap.suggestion_service(app).review(
+                ChangeContext(actor="mcp"), first["id"], approve=True
+            )
+    finally:
+        app.db.close()
+    again = call(server, "model_category_suggestions")
+    assert again["suggestions"] == out["suggestions"] and "model" not in again
+    assert again["total"] == len(again["suggestions"]) and not again["truncated"]
+    month = first["booking_date"][:7]
+    close = call(server, "finance_month_close", month=month)
+    assert close["model_suggestions_pending"] == sum(
+        s["booking_date"].startswith(month) for s in out["suggestions"]
+    )

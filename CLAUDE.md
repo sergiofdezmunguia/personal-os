@@ -64,7 +64,7 @@ Reglas impuestas por `lint-imports`:
   `list_tasks`, `complete_task`, `create_calendar_event`, `list_calendar_events`,
   `sync_apple`, `list_transactions`, `finance_summary`, `finance_month_close`,
   `list_category_rules`, `propose_category_rule`, `categorize_transactions`,
-  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`, `satellite_overview`. Actor de
+  `investments_overview`, `finance_recurring`, `name_unlabeled_transaction`, `satellite_overview`, `model_category_suggestions`. Actor de
   auditoría: `mcp`. Nueva herramienta ⇒ solo si aporta algo que las existentes no cubren; siempre sobre servicios de dominio y con test en `test_mcp_server.py`.
 - `.claude/hooks/` (configurados en `.claude/settings.json`, probados en `test_claude_hooks.py`):
   `guard.py` (bloquea secretos, push a main, force-push, commits en main),
@@ -83,13 +83,20 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite), 0015 (lectura de mercado) y 0016 (diario del satélite).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite), 0015 (lectura de mercado), 0016 (diario del satélite) y 0017 (categorizador aprendido).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
 - Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
 - Categoría directa desde MCP (`categorize_transactions`) ⇒ `categorized_by = 'mcp'`,
   revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
+- Categorizador aprendido (ADR 0017): `finance/categorizer.py` (TF-IDF + logística, puro, sin
+  torch ni LLM; C y umbral de abstención por validación agrupada por comercio) y
+  `finance/suggestions.py` (`fin_category_suggestions`). Solo **propone** para lo no
+  categorizado y no toca `fin_transactions`; aprueba o rechaza solo el usuario
+  (`pos finance suggestion approve|reject`). Nunca pisa lo manual, reglas ni Claude. Fuera de
+  la sync; no guarda modelos ni vectores. Evaluación con datos inventados:
+  `scripts/categorizer_eval.py`.
 - Cierre mensual: skill `.claude/skills/monthly-close/` + `finance/close.py` (solo lectura);
   bandeja de extractos `finance/inbox.py` (importa y archiva; nunca borra), también en `pos sync`.
 - Open banking (ADR 0010): cliente HTTP `adapters/enablebanking.py` (solo lectura), parser
