@@ -364,7 +364,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
     def model_category_suggestions(
         month: str | None = None, refresh: bool = False
     ) -> dict[str, Any]:
-        """Propuestas de categoría del modelo aprendido (ADR 0016) para movimientos sin
+        """Propuestas de categoría del modelo aprendido (ADR 0017) para movimientos sin
         categoría: [{id, category, confidence, …}], las más seguras primero. Con refresh=true
         reentrena con lo ya categorizado y recalcula las pendientes (unos segundos). Son
         PROPUESTAS: no cambian ningún movimiento; solo el usuario las aprueba
@@ -373,7 +373,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         svc = bootstrap.suggestion_service(application)
         try:
             run = svc.refresh(_ctx(), month=month) if refresh else None
-            items = svc.list(month=month, limit=200)
+            items = svc.list(month=month)
         except FinanceError as exc:
             raise ToolError(str(exc)) from exc
         out: dict[str, Any] = {
@@ -386,8 +386,10 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                     "category": s.category,
                     "confidence": s.confidence,
                 }
-                for s in items
+                for s in items[:200]
             ],
+            "total": len(items),
+            "truncated": len(items) > 200,
             "approve_with": "pos finance suggestion approve --all"
             + (f" -m {month}" if month else ""),
         }
@@ -397,6 +399,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
                 "candidates": run.candidates,
                 "proposed": run.proposed,
                 "abstained": run.abstained,
+                "skipped_reviewed": run.skipped_reviewed,
             }
         return out
 

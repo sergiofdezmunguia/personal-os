@@ -215,3 +215,9 @@ def test_model_category_suggestions_only_proposes(server, clock):
         app.db.close()
     again = call(server, "model_category_suggestions")
     assert again["suggestions"] == out["suggestions"] and "model" not in again
+    assert again["total"] == len(again["suggestions"]) and not again["truncated"]
+    month = first["booking_date"][:7]
+    close = call(server, "finance_month_close", month=month)
+    assert close["model_suggestions_pending"] == sum(
+        s["booking_date"].startswith(month) for s in out["suggestions"]
+    )

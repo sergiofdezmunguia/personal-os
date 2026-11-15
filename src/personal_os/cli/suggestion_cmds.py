@@ -1,4 +1,4 @@
-"""`pos finance suggest` y `pos finance suggestion …`: propuestas del modelo (ADR 0016)."""
+"""`pos finance suggest` y `pos finance suggestion …`: propuestas del modelo (ADR 0017)."""
 
 from __future__ import annotations
 
@@ -69,7 +69,12 @@ def suggest(
         return
     typer.echo(
         f"Modelo: {r.examples} movimientos de {r.merchants} comercios, {r.categories} categorías"
-        f" (C={r.C:g}, umbral de confianza {_pct(min(r.threshold, 1.0))})."
+        f" (C={r.C:g}, "
+        + (
+            f"umbral de confianza {_pct(r.threshold)})."
+            if r.threshold <= 1
+            else "no alcanza la precisión objetivo: no propondrá nada)."
+        )
     )
     typer.echo(
         f"  En comercios nuevos (validación interna) acierta {_pct(r.cv_accuracy)}; propone en"
@@ -78,7 +83,7 @@ def suggest(
     typer.echo(
         f"✓ {res.proposed} propuestas de {res.candidates} sin categoría "
         f"({res.abstained} sin propuesta por poca confianza"
-        + (f", {res.skipped_rejected} ya rechazadas" if res.skipped_rejected else "")
+        + (f", {res.skipped_reviewed} ya revisadas antes" if res.skipped_reviewed else "")
         + ")."
     )
     if res.proposed:
@@ -120,8 +125,11 @@ def suggestion_approve(
     """Aprueba propuestas: el movimiento queda con esa categoría, como si la pusieras tú."""
     svc = _svc()
     try:
+        if all_ and refs:
+            fail("Usa ids o --all, no ambos")
         if all_:
             refs = [s.transaction.id for s in svc.list(month=month)]
+        refs = list(dict.fromkeys(refs or []))  # sin repetidos
         if not refs:
             fail("Indica qué propuestas aprobar o usa --all (ver `pos finance suggestion list`)")
         applied = skipped = 0
@@ -147,7 +155,7 @@ def suggestion_reject(
     """Rechaza propuestas (no se vuelven a proponer para ese movimiento)."""
     svc = _svc()
     try:
-        for ref in refs:
+        for ref in dict.fromkeys(refs):
             res = svc.review(ChangeContext.cli(), ref, approve=False)
             typer.echo(f"✗ {_line(res.suggestion)}")
     except FinanceError as exc:

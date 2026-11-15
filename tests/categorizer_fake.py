@@ -1,4 +1,4 @@
-"""Movimientos categorizados INVENTADOS para entrenar y evaluar el categorizador (ADR 0016).
+"""Movimientos categorizados INVENTADOS para entrenar y evaluar el categorizador (ADR 0017).
 
 Adaptado del generador sintético de `expense-categorizer`: cada categoría tiene varias
 «familias» de comercio para que la evaluación con comercios nuevos tenga sentido (un comercio
@@ -26,7 +26,7 @@ CATALOG = {
     "compras": (["ZARA", "PRIMARK", "PULL&BEAR", "H&M", "MANGO", "DECATHLON"], 40, -1, 4),
     "ocio": (["CINES", "TEATRO", "TICKETMASTER", "BOWLING", "CONCIERTO"], 25, -1, 3),
     "vuelos": (["BINTER", "IBERIA", "RYANAIR", "VUELING"], 140, -1, 1),
-    "nomina": (["NOMINA", "TRANSFERENCIA NOMINA"], 2100, 1, 1),
+    "nomina": (["NOMINA", "TRANSFERENCIA NOMINA"], 1000, 1, 1),
     "intereses": (["INTERESES", "ABONO INTERESES"], 9, 1, 1),
     "inversion": (["PLAN DE INVERSION", "COMPRA ETF", "SAVEBACK"], 300, -1, 2),
 }  # fmt: skip

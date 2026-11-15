@@ -1,4 +1,4 @@
-"""Evaluación reproducible del categorizador (ADR 0016) con datos INVENTADOS.
+"""Evaluación reproducible del categorizador (ADR 0017) con datos INVENTADOS.
 
     uv run python scripts/categorizer_eval.py
 

@@ -153,7 +153,7 @@ principal incluye sus subcategorías.
 Las reglas comparan sin mayúsculas ni acentos. Menor prioridad = se evalúa antes; gana la
 primera que casa.
 
-### Propuestas del modelo (ADR 0016)
+### Propuestas del modelo (ADR 0017)
 
 Un modelo pequeño (TF-IDF + regresión logística) aprende de lo que ya está categorizado y
 propone categoría para lo que no la tiene. Solo propone cuando está seguro (umbral elegido para

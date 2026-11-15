@@ -1,4 +1,4 @@
-# 0016 — Categorizador aprendido: propuestas con abstención
+# 0017 — Categorizador aprendido: propuestas con abstención
 
 Fecha: 2026-11-15 · Estado: propuesta
 
@@ -35,14 +35,17 @@ conocen, así que la cifra que importa es la de comercios nuevos.
   unos segundos, cada vez que se pide. **No se guarda ningún modelo ni vector**; si algún día
   hiciera falta cachearlo, iría al directorio de datos del usuario, nunca al repo.
 - **Propuestas, no categorías** (`finance/suggestions.py`, tabla
-  `fin_category_suggestions`, migración `finance/0009`): una fila por movimiento sin
+  `fin_category_suggestions`, migración `finance/0010`): una fila por movimiento sin
   categoría con `category`, `confidence` y `status` (`pending` · `accepted` · `rejected` ·
   `superseded`). Proponer **no toca `fin_transactions`**: el resumen del mes no cambia hasta
   aprobar. Es el análogo de las reglas `proposed`.
 - **Solo el usuario revisa** (actor `cli`). Aprobar = `FinanceService.set_category` como el
   usuario (`category_source = 'manual'`, `categorized_by = 'cli'`) y solo si el movimiento
   sigue sin categoría; si entretanto lo categorizó él, una regla o Claude, la propuesta queda
-  `superseded` y no se toca nada. Rechazar es definitivo para ese movimiento.
+  `superseded` y no se toca nada (si luego vuelve a quedar sin categoría, se puede reproponer).
+  Rechazar es definitivo para ese movimiento, y lo aprobado tampoco se repropone aunque se
+  quite la categoría: su historial se conserva. Proponer y revisar leen y escriben dentro de
+  la misma transacción, así que no se pisan entre sí.
 - **Fuera de la sync**: se ejecuta solo bajo demanda (`pos finance suggest`, MCP
   `model_category_suggestions` con `refresh`). La sync sigue siendo determinista y sin modelos.
 - Interfaces: `pos finance suggest [-m AAAA-MM] [--evaluate]`,
@@ -59,10 +62,11 @@ propio umbral):
 
 | Escenario | Comercios | Acierto | Cobertura | Precisión cubierta |
 |---|---|---|---|---|
-| fácil (1.500 movs., 3 % ruido, 12 % ambiguos) | 638 | 88,2 % | 97,9 % | 89,5 % |
-| difícil (600 movs., 15 % ruido, 35 % ambiguos) | 353 | 68,3 % | 7,7 % | 89,1 % |
+| fácil (1.500 movs., 3 % ruido, 12 % ambiguos) | 638 | 87,9 % | 97,7 % | 89,5 % |
+| difícil (600 movs., 15 % ruido, 35 % ambiguos) | 353 | 68,8 % | 8,5 % | 88,2 % |
 
-El escenario fácil queda fijado en `test_reproducible_evaluation_on_new_merchants`. Los datos
+El escenario fácil queda fijado en `test_reproducible_evaluation_on_new_merchants` (con la
+versión de scikit-learn de `uv.lock`; otra versión puede mover algún decimal). Los datos
 sintéticos comparten trozos de nombre entre comercios de la misma categoría, justo lo que
 aprovecha TF-IDF, y por eso son más fáciles que los reales: las cifras que justifican la
 decisión son las reales de arriba. Con los datos del usuario, en local y solo con cifras

@@ -1,4 +1,4 @@
-"""Categorizador de movimientos aprendido de lo ya categorizado (ADR 0016). Puro y determinista.
+"""Categorizador de movimientos aprendido de lo ya categorizado (ADR 0017). Puro y determinista.
 
 Lleva a Personal OS lo medido en el proyecto `expense-categorizer`: TF-IDF de caracteres y
 palabras del concepto + importe, signo, día de la semana y tipo de cuenta, con regresión
@@ -10,7 +10,7 @@ caso de lo que las reglas no cubren):
 - el **umbral de abstención**: la confianza más baja con la que, en esa validación, lo propuesto
   acierta al menos `target_precision`. Por debajo, el modelo no propone nada.
 
-Con los datos reales de Sergio (fuera del repo), esta receta acertó el 70 % en comercios nuevos y
+Con los datos reales del usuario (fuera del repo), esta receta acertó el 70 % en comercios nuevos y
 se atrevió con el 41 % con un 98 % de precisión. Embeddings y LLM no aportaron: no hay torch.
 
 No guarda nada: se entrena en memoria cada vez (unos segundos) y no deja vectores ni modelos con
@@ -19,7 +19,6 @@ datos personales en disco. No conoce la base de datos: recibe y devuelve datacla
 
 from __future__ import annotations
 
-import math
 import re
 import unicodedata
 from collections import Counter
@@ -209,7 +208,7 @@ class Categorizer:
             pred = np.array([p[0] for p in oof])
             conf = np.array([p[1] for p in oof])
             proposable = pred != RARE
-            correct = pred == labels
+            correct = (pred == labels) & (labels != RARE)  # «rara» nunca cuenta como acierto
             threshold = pick_threshold(conf[proposable], correct[proposable], target_precision)
             covered = proposable & (conf >= threshold)
             features, clf = _fit(items, labels, C)
@@ -302,5 +301,5 @@ def evaluate_new_merchants(
         "folds": folds,
         "accuracy": hits / n,
         "coverage": proposed / n,
-        "precision_covered": proposed_ok / proposed if proposed else math.nan,
+        "precision_covered": proposed_ok / proposed if proposed else None,
     }

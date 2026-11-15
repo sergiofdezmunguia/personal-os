@@ -804,6 +804,7 @@ dependencies = [
     { name = "pyrage" },
     { name = "python-dateutil" },
     { name = "scikit-learn" },
+    { name = "threadpoolctl" },
     { name = "typer" },
     { name = "xlrd" },
 ]
@@ -826,6 +827,7 @@ requires-dist = [
     { name = "pyrage", specifier = ">=1.2" },
     { name = "python-dateutil", specifier = ">=2.9" },
     { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "threadpoolctl", specifier = ">=3.1" },
     { name = "typer", specifier = ">=0.12" },
     { name = "xlrd", specifier = ">=2.0" },
 ]

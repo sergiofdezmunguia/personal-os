@@ -1,4 +1,4 @@
--- Propuestas de categoría del modelo aprendido (ADR 0016). No tocan fin_transactions: el
+-- Propuestas de categoría del modelo aprendido (ADR 0017). No tocan fin_transactions: el
 -- movimiento sigue sin categoría hasta que el usuario aprueba. Una fila por movimiento.
 -- pending  = esperando revisión (se recalcula en cada `pos finance suggest`)
 -- accepted = el usuario la aprobó (el movimiento queda con categoría manual del usuario)

@@ -82,7 +82,7 @@ def finance_service(application: App):
 
 
 def suggestion_service(application: App):
-    """Propuestas de categoría del modelo aprendido (ADR 0016)."""
+    """Propuestas de categoría del modelo aprendido (ADR 0017)."""
     from personal_os.core.events import EventLog
     from personal_os.finance.suggestions import SuggestionService
 

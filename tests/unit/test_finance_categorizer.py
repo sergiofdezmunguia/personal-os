@@ -1,4 +1,4 @@
-"""Categorizador aprendido (ADR 0016): modelo puro, propuestas, revisión y evaluación. Solo con
+"""Categorizador aprendido (ADR 0017): modelo puro, propuestas, revisión y evaluación. Solo con
 datos inventados (`tests/categorizer_fake.py`)."""
 
 from __future__ import annotations
@@ -86,13 +86,13 @@ def test_not_enough_data():
 
 
 def test_reproducible_evaluation_on_new_merchants():
-    """La cifra del ADR 0016 con datos inventados (1.500 movimientos, semilla 7, 5 pliegues por
+    """La cifra del ADR 0017 con datos inventados (1.500 movimientos, semilla 7, 5 pliegues por
     comercio). Los datos sintéticos son más fáciles que los reales: el generador comparte
     trozos de nombre entre comercios de la misma categoría."""
     ev = categorizer.evaluate_new_merchants(fake.generate(1500, seed=7))
     assert ev["merchants"] == 638
-    assert round(ev["accuracy"], 3) == 0.882
-    assert round(ev["coverage"], 3) == 0.979
+    assert round(ev["accuracy"], 3) == 0.879
+    assert round(ev["coverage"], 3) == 0.977
     assert round(ev["precision_covered"], 3) == 0.895
 
 
@@ -171,7 +171,8 @@ def test_approve_sets_user_category_and_reject_is_forever(svc, sug):
     assert rej.suggestion.status == "rejected" and not rej.applied
     assert svc.get_transaction(second.transaction.id).category is None
     again = sug.refresh(CLI)
-    assert again.skipped_rejected == 1
+    assert again.skipped_reviewed == 1  # el rechazado (el aprobado ya no es candidato)
+    assert again.candidates == 39
     assert second.transaction.id not in {s.transaction.id for s in sug.list()}
     with pytest.raises(FinanceError, match="no está pendiente"):
         sug.review(CLI, first.transaction.id, approve=True)
@@ -249,3 +250,50 @@ def test_clock_is_used_for_review_time(app, svc, clock):
         (s.transaction.id,),
     )
     assert (row["reviewed_by"], row["reviewed_at"]) == ("cli", "2026-10-06T09:30:00Z")
+
+
+def test_reviewed_history_survives_refresh(svc, sug):
+    """Lo aprobado y lo rechazado no vuelven a `pending` aunque se quite la categoría; lo
+    `superseded` sí se puede volver a proponer si el movimiento vuelve a quedar sin categoría."""
+    _load(svc)
+    sug.refresh(CLI)
+    a, b = sug.list()[:2]
+    sug.review(CLI, a.transaction.id, approve=True)
+    svc.set_category(CLI, a.transaction.id, None)  # el usuario se arrepiente y la quita
+    svc.set_category(CLI, b.transaction.id, "ocio")  # categorizado por otra vía
+    res = sug.refresh(CLI)
+    assert res.superseded == 1 and sug.get(b.transaction.id).status == "superseded"
+    accepted = sug.get(a.transaction.id)
+    assert accepted.status == "accepted" and accepted.transaction.category is None
+    row = svc.db.one(
+        "SELECT reviewed_by FROM fin_category_suggestions WHERE transaction_id = ?",
+        (a.transaction.id,),
+    )
+    assert row["reviewed_by"] == "cli"
+    assert a.transaction.id not in {s.transaction.id for s in sug.list()}
+    svc.set_category(CLI, b.transaction.id, None)
+    sug.refresh(CLI)
+    assert sug.get(b.transaction.id).status == "pending"
+
+
+def test_list_rejects_unknown_status_and_month_is_checked_before_training(sug):
+    with pytest.raises(FinanceError, match="Estado desconocido"):
+        sug.list(status="foo")
+    with pytest.raises(FinanceError, match="Mes inválido"):
+        sug.refresh(CLI, month="2026-13")  # sin datos: si entrenara antes, el error sería otro
+
+
+def test_cli_close_mentions_pending_suggestions_and_approve_flags(app, svc):
+    pending, _ = _load(svc)
+    runner = CliRunner()
+    assert runner.invoke(cli, ["finance", "suggest"]).exit_code == 0
+    month = pending[-1].booking_date[:7]
+    n = len(bootstrap.suggestion_service(app).list(month=month))
+    close = runner.invoke(cli, ["finance", "close", month])
+    assert close.exit_code == 0
+    assert (f"{n} propuestas del modelo por revisar" in close.output) == bool(n)
+    first = bootstrap.suggestion_service(app).list()[0].transaction.id
+    both = runner.invoke(cli, ["finance", "suggestion", "approve", first, "--all"])
+    assert both.exit_code != 0 and "no ambos" in both.output
+    twice = runner.invoke(cli, ["finance", "suggestion", "approve", first, first])
+    assert twice.exit_code == 0 and "1 categorizados" in twice.output

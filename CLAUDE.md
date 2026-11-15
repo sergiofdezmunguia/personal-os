@@ -83,14 +83,14 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite), 0015 (lectura de mercado) y 0016 (categorizador aprendido).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite), 0015 (lectura de mercado) y 0017 (categorizador aprendido).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
 - Reglas desde MCP ⇒ `proposed`; solo el usuario aprueba. Lo manual nunca lo pisan reglas.
 - Categoría directa desde MCP (`categorize_transactions`) ⇒ `categorized_by = 'mcp'`,
   revisable con `--by-claude`; nunca sobre lo que el usuario puso a mano.
-- Categorizador aprendido (ADR 0016): `finance/categorizer.py` (TF-IDF + logística, puro, sin
+- Categorizador aprendido (ADR 0017): `finance/categorizer.py` (TF-IDF + logística, puro, sin
   torch ni LLM; C y umbral de abstención por validación agrupada por comercio) y
   `finance/suggestions.py` (`fin_category_suggestions`). Solo **propone** para lo no
   categorizado y no toca `fin_transactions`; aprueba o rechaza solo el usuario

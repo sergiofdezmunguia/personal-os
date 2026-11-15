@@ -1,11 +1,12 @@
-"""Propuestas de categoría del modelo aprendido (ADR 0016): servicio de dominio.
+"""Propuestas de categoría del modelo aprendido (ADR 0017): servicio de dominio.
 
 - `refresh` entrena `categorizer.Categorizer` con lo ya categorizado de la base y guarda una
   propuesta `pending` para cada movimiento **sin categoría** en el que el modelo supera su umbral
   de abstención. No toca `fin_transactions`: el resumen del mes no cambia hasta que se aprueba.
 - Solo el usuario (actor `cli`) aprueba o rechaza. Aprobar = `FinanceService.set_category`
   como el usuario, y solo si el movimiento sigue sin categoría: nunca pisa lo manual, lo de las
-  reglas ni lo de Claude (`superseded`). Rechazar es para siempre en ese movimiento.
+  reglas ni lo de Claude (`superseded`). Rechazar es para siempre en ese movimiento, y lo
+  aprobado no se vuelve a proponer aunque luego se quite la categoría (queda su historial).
 - Nada se guarda del modelo: ni vectores ni coeficientes; solo la categoría propuesta y su
   confianza, que son datos del propio usuario en su base.
 """
@@ -20,6 +21,8 @@ from personal_os.core.db import Database
 from personal_os.core.events import ChangeContext, EventLog
 from personal_os.finance.models import FinanceError, NotFound, Transaction
 from personal_os.finance.service import FinanceService
+
+STATUSES = ("pending", "accepted", "rejected", "superseded")
 
 
 @dataclass(frozen=True)
@@ -38,7 +41,7 @@ class RefreshResult:
     candidates: int  # movimientos sin categoría que se han mirado
     proposed: int  # con propuesta pendiente tras esta pasada
     abstained: int  # sin propuesta: poca confianza o categoría rara
-    skipped_rejected: int  # ya rechazados antes: no se vuelven a proponer
+    skipped_reviewed: int  # ya revisados (rechazados o aprobados): no se vuelven a proponer
     superseded: int  # propuestas viejas cuyo movimiento ya tiene categoría
 
 
@@ -105,45 +108,46 @@ class SuggestionService:
         (de un mes o de todo). Lanza `FinanceError` si no hay datos para aprender."""
         from personal_os.finance import categorizer
 
+        if month:
+            self.finance._check_month(month)  # antes de entrenar: falla al momento
         kwargs = {} if target_precision is None else {"target_precision": target_precision}
         try:
             model = categorizer.Categorizer.train(self.training_examples(), **kwargs)
         except categorizer.NotEnoughData as exc:
             raise FinanceError(str(exc)) from exc
-        where, params = "t.category IS NULL", []
-        if month:
-            self.finance._check_month(month)
-            where += " AND t.booking_date LIKE ?"
-            params.append(month + "-%")
-        candidates = self._examples(where, params)
-        rejected = {
-            r["transaction_id"]
-            for r in self.db.all(
-                "SELECT transaction_id FROM fin_category_suggestions WHERE status = 'rejected'"
-            )
-        }
-        todo = [(tid, ex) for tid, ex in candidates if tid not in rejected]
-        preds = model.predict([ex for _, ex in todo])
         r = model.report
         tag = f"tfidf C={r.C:g} umbral={r.threshold:.3f} n={r.examples}"
         now = to_iso(self.clock.now())
-        proposed = 0
+        where, params = "t.category IS NULL", []
+        if month:
+            where += " AND t.booking_date LIKE ?"
+            params.append(month + "-%")
+        # Candidatos, revisadas y escritura en la misma transacción (BEGIN IMMEDIATE): una
+        # revisión del usuario no puede colarse entre la lectura y la escritura.
         with self.db.transaction():
+            candidates = self._examples(where, params)
+            reviewed = {
+                row["transaction_id"]
+                for row in self.db.all(
+                    "SELECT transaction_id FROM fin_category_suggestions"
+                    " WHERE status IN ('rejected', 'accepted')"
+                )
+            }
+            todo = [(tid, ex) for tid, ex in candidates if tid not in reviewed]
+            preds = model.predict([ex for _, ex in todo])
             superseded = self._supersede_stale(now).rowcount
+            proposed = 0
             for (tid, _), p in zip(todo, preds, strict=True):
                 self.db.execute(
                     "DELETE FROM fin_category_suggestions WHERE transaction_id = ?"
-                    " AND status = 'pending'",
+                    " AND status IN ('pending', 'superseded')",
                     (tid,),
                 )
                 if p.category is None:
                     continue
                 self.db.execute(
                     "INSERT INTO fin_category_suggestions(transaction_id, category, confidence,"
-                    " status, model, created_at) VALUES (?,?,?,'pending',?,?)"
-                    " ON CONFLICT(transaction_id) DO UPDATE SET category = excluded.category,"
-                    " confidence = excluded.confidence, status = 'pending', model = excluded.model,"
-                    " created_at = excluded.created_at, reviewed_at = NULL, reviewed_by = NULL",
+                    " status, model, created_at) VALUES (?,?,?,'pending',?,?)",
                     (tid, p.category, round(p.confidence, 4), tag, now),
                 )
                 proposed += 1
@@ -152,7 +156,7 @@ class SuggestionService:
                 candidates=len(candidates),
                 proposed=proposed,
                 abstained=len(todo) - proposed,
-                skipped_rejected=len(candidates) - len(todo),
+                skipped_reviewed=len(candidates) - len(todo),
                 superseded=superseded,
             )
             self.events.record(
@@ -165,6 +169,8 @@ class SuggestionService:
                     "candidates": result.candidates,
                     "proposed": proposed,
                     "abstained": result.abstained,
+                    "skipped_reviewed": result.skipped_reviewed,
+                    "superseded": superseded,
                     "C": r.C,
                     "threshold": r.threshold,
                     "examples": r.examples,
@@ -187,6 +193,8 @@ class SuggestionService:
     ) -> list[Suggestion]:
         """Propuestas (más seguras primero). Las `pending` solo de movimientos que siguen sin
         categoría: si ya la tienen, la propuesta no cuenta."""
+        if status not in STATUSES:
+            raise FinanceError(f"Estado desconocido {status!r}: {', '.join(STATUSES)}")
         sql, params = _SELECT + " WHERE s.status = ?", [status]
         if status == "pending":
             sql += " AND t.category IS NULL"
@@ -214,14 +222,15 @@ class SuggestionService:
         """Aprueba (pone la categoría como el usuario) o rechaza una propuesta pendiente."""
         if ctx.actor != "cli":
             raise FinanceError("Las propuestas del modelo solo las aprueba o rechaza el usuario")
-        s = self.get(txn_ref)
-        if s.status != "pending":
-            raise FinanceError(f"La propuesta de {s.transaction.id} no está pendiente ({s.status})")
         now = to_iso(self.clock.now())
-        tid = s.transaction.id
-        with self.db.transaction():
-            current = self.finance.get_transaction(tid)
-            if current.category is not None:
+        with self.db.transaction():  # leer y decidir dentro: un refresh no puede colarse
+            s = self.get(txn_ref)
+            if s.status != "pending":
+                raise FinanceError(
+                    f"La propuesta de {s.transaction.id} no está pendiente ({s.status})"
+                )
+            tid = s.transaction.id
+            if s.transaction.category is not None:
                 status, applied = "superseded", False
             elif approve:
                 self.finance.set_category(ctx, tid, s.category)
@@ -230,7 +239,7 @@ class SuggestionService:
                 status, applied = "rejected", False
             self.db.execute(
                 "UPDATE fin_category_suggestions SET status = ?, reviewed_at = ?, reviewed_by = ?"
-                " WHERE transaction_id = ?",
+                " WHERE transaction_id = ? AND status = 'pending'",
                 (status, now, ctx.actor, tid),
             )
             self.events.record(
