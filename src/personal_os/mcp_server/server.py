@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
@@ -59,8 +59,13 @@ def _ctx() -> ChangeContext:
     return ChangeContext(actor="mcp")
 
 
-def _today(tz: str) -> str:
-    return datetime.now(ZoneInfo(tz)).date().isoformat()
+def _now(application):
+    """Ahora en la zona configurada, del `Clock` de la app (nunca `datetime.now()` directo)."""
+    return application.clock.now().astimezone(ZoneInfo(application.config.timezone))
+
+
+def _today(application) -> str:
+    return _now(application).date().isoformat()
 
 
 def _task_view(svc, task, occ=None) -> dict[str, Any]:
@@ -135,7 +140,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         tasks = [_task_view(svc, t) for t in svc.list_tasks(include_closed=include_closed)]
         tasks.sort(key=lambda t: (t["due_date"] or "9999", t["due_time"] or ""))
         tz = application.config.timezone
-        return {"today": _today(tz), "timezone": tz, "tasks": tasks}
+        return {"today": _today(application), "timezone": tz, "tasks": tasks}
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True))
     def complete_task(task_id: str) -> dict[str, Any]:
@@ -198,8 +203,14 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         defecto). Los recurrentes se incluyen siempre."""
         application = open_app()
         tz = application.config.timezone
-        events = bootstrap.calendar_service(application).list(since=from_date or _today(tz))
-        return {"today": _today(tz), "timezone": tz, "events": [_event_view(e) for e in events]}
+        events = bootstrap.calendar_service(application).list(
+            since=from_date or _today(application)
+        )
+        return {
+            "today": _today(application),
+            "timezone": tz,
+            "events": [_event_view(e) for e in events],
+        }
 
     @server.tool(
         annotations=ToolAnnotations(readOnlyHint=False, idempotentHint=True, openWorldHint=True)
@@ -270,7 +281,7 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         traspasos), gasto por categoría, cuentas, categorías disponibles y última importación."""
         application = open_app()
         svc = bootstrap.finance_service(application)
-        month = month or datetime.now(ZoneInfo(application.config.timezone)).strftime("%Y-%m")
+        month = month or _now(application).strftime("%Y-%m")
         try:
             s = svc.month_summary(month)
         except FinanceError as exc:

@@ -125,6 +125,13 @@ def test_sync_apple_reaches_the_iphone(server, device):
     assert created["title"] == "Desde Claude"
 
 
+def test_default_dates_follow_the_app_clock_not_the_system(server):
+    # El reloj fijo dice lunes 5-oct-2026: «hoy» y el mes por defecto salen de él.
+    assert call(server, "list_tasks")["today"] == "2026-10-05"
+    assert call(server, "list_calendar_events")["today"] == "2026-10-05"
+    assert call(server, "finance_summary")["month"] == "2026-10"
+
+
 def test_satellite_overview_includes_market_reading(clock):
     """Lista inventada y precios sintéticos: el MCP da régimen, vistas y tramos en JSON."""
     from datetime import date, timedelta
