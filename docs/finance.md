@@ -216,6 +216,21 @@ EUR, tope, colchón, caída mínima, stop y objetivo). `pos sync` descarga los c
 ideas (comprar / vigilar / vender), los impuestos estimados del año y si el satélite le gana
 al MSCI World. Para analizar una idea a fondo: skill `satellite-review`. Detalle en ADR 0014.
 
+### Lectura de mercado (ADR 0015)
+
+Encima de las ideas, la tarjeta **Cómo está el mercado** dice si hay miedo, euforia o nada
+claro, con seis indicadores públicos (VIX, VIX frente a VIX3M, S&P 500 frente a su media de 200
+y desde máximos, amplitud de TraderMonty y volatilidad del último mes). Cada idea añade su
+tendencia (corto/medio/largo), el rango de bajada y subida a 3 meses («en 1 de cada 10 casos
+parecidos llegó a caer más de X %») y hasta tres tramos para repartir el mismo importe. Nada
+de esto cambia el presupuesto, el stop ni el objetivo.
+
+La prueba histórica (`uv run python scripts/market_backtest.py --cache <carpeta>`: 29 índices y
+valores grandes, 2000–2026, solo datos públicos) dice que **entrar con miedo no mejora la
+entrada** de forma demostrable, que esperar a que haya miedo rinde menos que comprar cada mes,
+y que los rangos a 1 y 3 meses están bien calibrados (a 12 meses, cortos). El panel lo enseña
+tal cual. Si se cambia un umbral, hay que repetir la prueba y actualizar `market.EVIDENCE`.
+
 ## Qué vigila `pos doctor` en la cartera
 
 Tres áreas, sin red, sin escribir y sin gastar cupo del banco. Son avisos (`!`): no cambian el

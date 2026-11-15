@@ -336,25 +336,44 @@ def update_prices(application: App, *, force: bool = False, client=None):
 
 
 def _update_market_prices(svc, sat, client, report, *, stamp: str) -> int:
-    """Histórico de la lista de seguimiento y del índice de referencia (ADR 0014): la primera
-    vez 5 años (para comparar operaciones antiguas con el índice), después el último mes."""
-    from personal_os.adapters.quotes import QuoteError, history
-    from personal_os.finance import satellite
+    """Histórico de la lista de seguimiento y del índice de referencia (ADR 0014) y de los
+    indicadores de mercado (ADR 0015). Cada símbolo se descarga entero una vez (para los rangos
+    estimados hace falta historia larga; se apunta en `sync_cursors`) y después el último mes.
+    Solo se envían símbolos públicos. Un fallo es un aviso: el régimen queda «desconocido»."""
+    from personal_os.adapters.quotes import QuoteError, breadth_history, history
+    from personal_os.finance import market, satellite
+    from personal_os.sync.store import Cursors
 
+    cursors = Cursors(svc.db)
     new = 0
-    for symbol in [w.symbol for w in sat.watch] + [sat.benchmark]:
-        range_ = "1mo" if satellite.history_start(svc, symbol) else "5y"
+    watch = [w.symbol for w in sat.watch] + [sat.benchmark]
+    for symbol in watch + list(market.REGIME_SYMBOLS):
+        deep = cursors.get("market", f"full:{symbol}") is None
+        range_ = "max" if deep else "1mo"
         try:
             h = history(client, symbol, range_=range_)
         except QuoteError as exc:
             report.errors.append(str(exc))
             continue
-        if h.currency != "EUR":
+        if symbol in watch and h.currency != "EUR":
             report.errors.append(
                 f"{symbol} cotiza en {h.currency}, no en EUR: usa su símbolo de Xetra"
             )
             continue
         new += satellite.store_history(svc, symbol, h.currency, h.closes, fetched_at=stamp)
+        if deep:
+            cursors.set("market", f"full:{symbol}", stamp)
+    try:
+        h = breadth_history(client)
+        new += satellite.store_history(svc, h.symbol, h.currency, h.closes[-400:], fetched_at=stamp)
+    except QuoteError as exc:
+        report.errors.append(f"{exc}: la lectura de mercado irá sin amplitud")
+    reg = satellite.market_regime(svc, today=stamp[:10])
+    report.stats["market_regime"] = reg.label
+    if reg.label == "desconocido":
+        report.errors.append(
+            "Lectura de mercado desconocida: faltan datos de " + ", ".join(reg.missing)
+        )
     return new
 
 

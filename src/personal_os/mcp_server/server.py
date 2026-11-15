@@ -25,7 +25,7 @@ from personal_os.calendar.models import CalendarError
 from personal_os.core import rrule as _rrule
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
-from personal_os.finance import analyst, insights, investments, satellite
+from personal_os.finance import analyst, insights, investments, market, satellite
 from personal_os.finance.models import FinanceError, fmt_eur
 from personal_os.tasks import recurrence
 from personal_os.tasks.models import TaskError
@@ -436,7 +436,11 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
         disponible (tras colchón de emergencia y plan), ideas de compra/venta/vigilar sobre la
         lista de seguimiento con stop y objetivo, señales técnicas (caída desde máximos de 52
         semanas, medias de 50/200, RSI), impuestos del año (base del ahorro) y comparación con
-        el índice. Son ideas por reglas, no órdenes: el usuario decide y opera en su bróker."""
+        el índice. `market`: régimen miedo/neutral/euforia con sus indicadores y lo que dice la
+        prueba histórica (`evidence.fear_edge` false = no da ventaja); cada idea trae `context`
+        y `tranches` (tramos de entrada); `views` por ISIN: tendencia, nivel de entrada y rangos
+        de bajada/subida a 1, 3 y 12 meses (probabilidades, no predicciones). Son ideas por
+        reglas, no órdenes: el usuario decide y opera en su bróker."""
         application = open_app()
         cfg = application.config.finance.satellite
         if not cfg.enabled:
@@ -457,6 +461,19 @@ def build_server(open_app: Callable[[], bootstrap.App] = bootstrap.open_app) -> 
             "taxes": {**dataclasses.asdict(o.taxes), "tax_cents": o.taxes.tax_cents},
             "versus_benchmark": dataclasses.asdict(o.versus) if o.versus else None,
             "rules": dataclasses.asdict(cfg),
+            "market": {
+                "regime": o.regime.label, "summary": o.regime.summary, "day": o.regime.day,
+                "components": [dataclasses.asdict(c) for c in o.regime.components],
+                "missing": o.regime.missing,
+                "evidence": {"fear_edge": market.fear_edge(), "lines": market.evidence_lines(),
+                             "data": market.EVIDENCE},
+            } if o.regime else None,
+            "views": {isin: {"symbol": v.symbol, "trend": {**dataclasses.asdict(v.trend), "summary": v.trend.summary},
+                             "entry_from": v.entry_from,
+                             "ranges": [{**dataclasses.asdict(r), "text": r.text,
+                                         "note": market.calibration_note(r.h)} for r in v.ranges]}
+                      for isin, v in o.views.items()},
+            "disclaimer": "Ideas por reglas, no recomendaciones. Rangos = probabilidades de la historia, no predicciones.",
         })  # fmt: skip
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))

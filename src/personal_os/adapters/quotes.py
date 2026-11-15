@@ -99,11 +99,15 @@ class History:
 
 
 def history(client: QuotesClient, symbol: str, *, range_: str = "1y") -> History:
-    """Cierres diarios de un símbolo de Yahoo (p. ej. «APC.DE»)."""
+    """Cierres diarios de un símbolo de Yahoo (p. ej. «APC.DE»). Con `range_="max"`, toda la
+    historia diaria (Yahoo pasa a datos mensuales si se pide `range=max`)."""
+    params: dict = {"range": range_, "interval": "1d"}
+    if range_ == "max":
+        params = {"period1": 0, "period2": 9999999999, "interval": "1d"}
     try:
         r = client.http.get(
             f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-            params={"range": range_, "interval": "1d"},
+            params=params,
         )
         r.raise_for_status()
         res = r.json()["chart"]["result"][0]
@@ -118,3 +122,31 @@ def history(client: QuotesClient, symbol: str, *, range_: str = "1y") -> History
     if not pairs:
         raise QuoteError(f"Sin histórico para {symbol}")
     return History(symbol, res["meta"].get("currency", ""), pairs)
+
+
+BREADTH_URL = "https://tradermonty.github.io/market-breadth-analysis/market_breadth_data.csv"
+
+
+def breadth_history(client: QuotesClient, *, url: str = BREADTH_URL) -> History:
+    """Amplitud del S&P 500 (ADR 0015): % de valores sobre su media de 200 sesiones, media de 8
+    sesiones (`Breadth_Index_8MA`), del CSV público de TraderMonty. Se pide sin parámetros."""
+    import csv
+    import io
+    import math
+
+    try:
+        r = client.http.get(url)
+        r.raise_for_status()
+        rows = list(csv.DictReader(io.StringIO(r.text)))
+        pairs = sorted(
+            (row["Date"][:10], Decimal(str(round(v, 4))))
+            for row in rows
+            if row.get("Date")
+            and row.get("Breadth_Index_8MA") not in (None, "")
+            and math.isfinite(v := float(row["Breadth_Index_8MA"]))
+        )
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, csv.Error) as exc:
+        raise QuoteError(f"Sin datos de amplitud ({type(exc).__name__})") from exc
+    if not pairs:
+        raise QuoteError("Sin datos de amplitud")
+    return History("BREADTH200.SP500", "RATIO", pairs)
