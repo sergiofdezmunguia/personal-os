@@ -9,7 +9,8 @@
    importa la bandeja, categoriza lo pendiente (propone reglas para lo que se repite,
    categoriza directamente los comercios sueltos y te pregunta los dudosos), comprueba
    intereses y saveback, y te resume el mes frente al anterior.
-4. Revisa y aprueba: `pos finance rule approve --all` y, si quieres,
+4. Revisa y aprueba: `pos finance rule approve --all`, las propuestas del modelo
+   (`pos finance suggestion list -m AAAA-MM` y `approve --all` o una a una) y, si quieres,
    `pos finance list --by-claude -m AAAA-MM` (lo que categorizó Claude, marcado con `~`).
 
 Sin Claude también funciona: `pos sync` (o `pos finance inbox`) importa la bandeja y
@@ -151,6 +152,24 @@ principal incluye sus subcategorías.
 
 Las reglas comparan sin mayúsculas ni acentos. Menor prioridad = se evalúa antes; gana la
 primera que casa.
+
+### Propuestas del modelo (ADR 0016)
+
+Un modelo pequeño (TF-IDF + regresión logística) aprende de lo que ya está categorizado y
+propone categoría para lo que no la tiene. Solo propone cuando está seguro (umbral elegido para
+un ~90 % de aciertos en comercios que no ha visto; con datos reales dio un 98 %); lo demás lo
+deja. Proponer no cambia nada: el movimiento sigue sin categoría hasta que apruebas.
+
+```bash
+uv run pos finance suggest [-m AAAA-MM]                # entrena y propone (unos segundos)
+uv run pos finance suggestion list [-m AAAA-MM]        # las más seguras primero
+uv run pos finance suggestion approve --all [-m …] | <txn>…   # quedan como si las pusieras tú
+uv run pos finance suggestion reject <txn>…            # no se vuelve a proponer
+uv run pos finance suggest --evaluate                  # cuánto acierta con tus datos (solo cifras)
+```
+
+Nunca pisa lo que tiene categoría (a mano, reglas o Claude): si algo se categoriza antes de
+revisar su propuesta, la propuesta se descarta. No se guarda ningún modelo: se entrena cada vez.
 
 ## Consultar
 

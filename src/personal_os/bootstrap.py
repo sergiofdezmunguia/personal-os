@@ -81,6 +81,19 @@ def finance_service(application: App):
     )
 
 
+def suggestion_service(application: App):
+    """Propuestas de categoría del modelo aprendido (ADR 0016)."""
+    from personal_os.core.events import EventLog
+    from personal_os.finance.suggestions import SuggestionService
+
+    return SuggestionService(
+        application.db,
+        application.clock,
+        EventLog(application.db, application.clock),
+        finance_service(application),
+    )
+
+
 def cash_yields(cfg: Config) -> tuple:
     from personal_os.finance.close import CashYield
 

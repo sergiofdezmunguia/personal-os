@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 import typer
 
 from personal_os import bootstrap as wiring
+from personal_os.cli import suggestion_cmds
 from personal_os.cli.output import echo_json, fail
 from personal_os.core.config import ConfigError
 from personal_os.core.events import ChangeContext
@@ -24,6 +25,8 @@ app = typer.Typer(
 )
 rule_app = typer.Typer(help="Reglas de categorización.", no_args_is_help=True)
 app.add_typer(rule_app, name="rule")
+app.command("suggest")(suggestion_cmds.suggest)
+app.add_typer(suggestion_cmds.suggestion_app, name="suggestion")
 
 
 def _svc():
@@ -302,6 +305,11 @@ def close(
         )
     if mc.by_claude:
         typer.echo(f"  {mc.by_claude} categorizados por Claude: `pos finance list --by-claude`")
+    pending = len(wiring.suggestion_service(application).list(month=mc.month))
+    if pending:
+        typer.echo(
+            f"  {pending} propuestas del modelo por revisar: `pos finance suggestion list -m {mc.month}`"
+        )
     moved = [d for d in mc.deltas if d.delta_cents and (d.total_cents or d.previous_cents)]
     if moved:
         typer.echo("\nGasto por categoría (frente al mes anterior):")

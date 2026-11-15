@@ -13,6 +13,7 @@ dependencies = [
     "pyrage>=1.2",
     "xlrd>=2.0",
     "pdfplumber>=0.11",
+    "scikit-learn>=1.5",
 ]
 
 [project.scripts]

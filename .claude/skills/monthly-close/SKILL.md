@@ -30,6 +30,12 @@ lo que toca). Mes por defecto: el anterior al actual.
    hay recibo claro, déjalo y menciónalo en el resumen (el CSV mensual de TR lo resuelve).
    Nunca copies datos del correo (direcciones, números de pedido) a ningún sitio.
 4. **Categorizar lo pendiente** (`list_transactions` con `uncategorized=true` y `month`):
+   - Primero `model_category_suggestions` con `month` y `refresh=true`: el modelo aprendido
+     propone categoría solo donde está seguro. **No las repitas** con
+     `categorize_transactions` ni las apruebes tú: sáltate esos movimientos y, en el resumen,
+     di cuántas hay y que las apruebe con `pos finance suggestion approve --all -m AAAA-MM`
+     (o que revise antes `pos finance suggestion list -m AAAA-MM`). Si alguna te parece
+     claramente mal, dilo para que la rechace. Si falla por pocos datos, sigue sin él.
    - Mira antes `list_category_rules` y `finance_summary.categories`.
    - **Comercio que se repite** (o que claramente se repetirá: suscripciones, gimnasio,
      supermercado): `propose_category_rule` (queda propuesta; el usuario la aprueba).
@@ -56,12 +62,13 @@ lo que toca). Mes por defecto: el anterior al actual.
    - Cobros recurrentes (`finance_recurring`): total al mes, subidas de precio y duplicados.
    - Inversiones: plan cumplido o no, cartera y patrimonio neto.
    - Lo que queda pendiente del usuario: reglas propuestas (`pos finance rule approve --all`),
+     propuestas del modelo (`pos finance suggestion approve --all -m AAAA-MM`),
      preguntas sobre comercios, extractos que faltan.
    - Cuántos movimientos categorizaste tú (`pos finance list --by-claude -m AAAA-MM` para
      revisarlos).
 
 ## No hagas
 
-- No apruebes reglas ni crees categorías (solo el usuario).
+- No apruebes reglas ni propuestas del modelo ni crees categorías (solo el usuario).
 - No cambies categorías que el usuario puso a mano (la herramienta lo impide; no lo rodees).
 - No borres ni muevas ficheros de la bandeja a mano: lo hace `pos finance inbox`.
