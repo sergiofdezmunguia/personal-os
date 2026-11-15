@@ -13,6 +13,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable
+from dataclasses import replace
 from datetime import date
 
 from personal_os.core.clock import Clock, to_iso
@@ -21,6 +22,7 @@ from personal_os.core.events import ChangeContext, EventLog
 from personal_os.core.ids import new_id
 from personal_os.finance.importers import PROVISIONAL, ParsedStatement
 from personal_os.finance.importers import mask_identifiers as mask_merchant
+from personal_os.finance.importers.enablebanking import SOURCE as OPEN_BANKING
 from personal_os.finance.models import (
     Account,
     Category,
@@ -233,6 +235,21 @@ class FinanceService:
                     warnings=["Este fichero ya se había importado; no se ha hecho nada"],
                 )
 
+            lag = self._bank_balance_lag(account.id, statement)
+            if lag:
+                statement = replace(
+                    statement,
+                    balance_end_cents=statement.balance_end_cents - lag,
+                    transactions=[
+                        replace(t, balance_after_cents=t.balance_after_cents - lag)
+                        for t in statement.transactions
+                    ],
+                )
+                warnings.append(
+                    f"El saldo que da el banco difiere de lo importado en {lag / 100:+.2f} € "
+                    "en todos los días comunes: el banco aún no ha aplicado algún movimiento "
+                    "a su saldo. Se mantiene el saldo ya importado; compruébalo en su app."
+                )
             gap = self._gap_warning(account.id, statement)
             if gap:
                 warnings.append(gap)
@@ -381,6 +398,36 @@ class FinanceService:
                 f"{account.label} ya se importa desde la exportación CSV (con id por "
                 "movimiento); este extracto no hace falta. Usa la exportación CSV más reciente."
             )
+
+    def _bank_balance_lag(self, account_id: str, st: ParsedStatement) -> int:
+        """Open banking con id real en cada movimiento (Santander): el saldo de los días se
+        calcula hacia atrás desde el saldo actual del banco. Si ese saldo no incluye aún un
+        movimiento que el banco ya lista, todos los días comunes difieren en la misma cantidad
+        y el cuadre estricto de `_link_existing` lo rechazaría todo, semana tras semana. Con 5
+        o más días comunes ya importados (por id) y la misma diferencia en todos, se devuelve
+        esa diferencia para anclar el saldo a lo ya importado. Si no, 0."""
+        if st.source != OPEN_BANKING or not st.transactions:
+            return 0
+        if any(not t.external_id or t.external_id.startswith(PROVISIONAL) for t in st.transactions):
+            return 0
+        rows = self.db.all(
+            "SELECT booking_date, balance_after_cents, external_id FROM fin_transactions"
+            " WHERE account_id = ? ORDER BY booking_date, rowid",
+            (account_id,),
+        )
+        known = {r["external_id"] for r in rows if r["external_id"]}
+        existing_eod = {r["booking_date"]: r["balance_after_cents"] for r in rows}
+        incoming_eod = {t.booking_date: t.balance_after_cents for t in st.transactions}
+        days = {t.booking_date for t in st.transactions if t.external_id in known}
+        diffs = {
+            incoming_eod[d] - existing_eod[d]
+            for d in days
+            if existing_eod.get(d) is not None and incoming_eod.get(d) is not None
+        }
+        n = sum(1 for d in days if existing_eod.get(d) is not None)
+        if n >= 5 and len(diffs) == 1 and 0 not in diffs:
+            return diffs.pop()
+        return 0
 
     def _link_existing(
         self, account_id: str, st: ParsedStatement, now: str

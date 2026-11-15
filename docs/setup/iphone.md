@@ -74,6 +74,20 @@ panel › index.html**, pero sin tooltips (Archivos no ejecuta JavaScript).
    Se pide sin eco y se guarda en `~/.config/personal-os/secrets.toml` (permisos 0600).
    `uv run pos secrets status` confirma sin mostrar el valor.
 
+## Apuntar y widget: solapes y fecha de los datos
+
+- **Solapes (Apuntar v12):** al apuntar una cita con hora, mira todos los calendarios del iPhone.
+  Cuenta como solape una cita con hora que se cruce; las contiguas y las de todo el día
+  (cumpleaños, festivos) no. Por Siri se guarda igual y la respuesta dice con qué se solapa y la
+  frase para quitarla («cancela Cine del viernes 6»). Abierto en la app, el aviso sale antes de
+  guardar. Si no puede leer el calendario, guarda y dice «No he podido comprobar si se solapa»:
+  revisa que Scriptable tenga acceso **total** al Calendario. «Mueve…» aún no comprueba solapes.
+- **Fecha de los datos (widget):** «Datos: sáb 7 nov, 10:30» es cuándo calculó el PC las cifras
+  de dinero (la agenda es siempre en vivo). Con 36 h o más sin datos nuevos sale en rojo
+  «Datos antiguos: 4 nov»: PC apagado, tarea programada caída o iCloud sin sincronizar. No dice
+  si el banco lleva días sin movimientos nuevos (eso lo vigila `pos doctor`).
+- Tras actualizar: `uv run pos bridge install` y esperar a que iCloud lo lleve al iPhone.
+
 ## Comprobación
 
 ```bash
@@ -97,4 +111,4 @@ Automatización personal → **Hora del día** 23:30, diaria, **Ejecutar inmedia
 5. **Añadir a archivo de texto** → iCloud Drive › PersonalOS-extractos › salud › `salud.txt`
    (crear la carpeta la primera vez), *nueva línea* activado.
 
-El panel (pestaña Hábitos y «Ayer en Salud» en Hoy) lo lee en la siguiente sincronización.
+El panel (tarjeta «Ayer en Salud» en Hoy; la pestaña Hábitos se quitó en 2026-11) lo lee en la siguiente sincronización.

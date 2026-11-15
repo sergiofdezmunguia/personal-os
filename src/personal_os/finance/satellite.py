@@ -12,6 +12,8 @@ el usuario en su bróker. Reglas (porcentajes en la configuración `[finance.sat
   volver a máximos (como mucho +`take_profit` %).
 - **Venta** (posiciones del satélite): ganancia ≥ `take_profit` % o pérdida ≥ `stop` %.
 - Un ISIN que está en el plan de inversión periódico es «núcleo», nunca satélite.
+- **Lectura de mercado** (ADR 0015, `market.py`): régimen de miedo/euforia, tendencia, rangos
+  estimados y tramos de entrada. Es contexto: no cambia ninguna de las reglas de arriba.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from personal_os.finance import investments
+from personal_os.finance import investments, market
 from personal_os.finance.service import FinanceService
 
 # IRPF, base del ahorro (España): (hasta, tipo).
@@ -62,6 +64,34 @@ def closes(
     return [(r["price_date"], Decimal(r["close"])) for r in rows]
 
 
+def market_series(svc: FinanceService, symbol: str, *, until: str, days: int = 400
+                  ) -> list[tuple[str, float]]:  # fmt: skip
+    """Serie de cualquier divisa (índices en USD, amplitud en `RATIO`) como floats."""
+    since = (date.fromisoformat(until) - timedelta(days=days)).isoformat()
+    rows = svc.db.all(
+        "SELECT price_date, close FROM fin_market_prices WHERE symbol = ?"
+        " AND price_date BETWEEN ? AND ? ORDER BY price_date",
+        (symbol, since, until),
+    )
+    return [(r["price_date"], float(r["close"])) for r in rows]
+
+
+def market_regime(svc: FinanceService, *, today: str) -> market.Regime:
+    symbols = (*market.REGIME_SYMBOLS, market.BREADTH)
+    return market.regime({s: market_series(svc, s, until=today) for s in symbols}, today=today)
+
+
+def market_views(svc: FinanceService, cfg, *, today: str) -> dict[str, market.View]:
+    """Tendencia, rangos estimados y nivel de entrada de cada valor de la lista (por ISIN)."""
+    out = {}
+    for w in cfg.watch:
+        data = [(d, float(c)) for d, c in closes(svc, w.symbol, until=today, days=365 * 30 + 10)]
+        if len(data) >= 20:
+            out[w.isin] = market.view(w.symbol, [d for d, _ in data], [v for _, v in data],
+                                      dip=cfg.dip)  # fmt: skip
+    return out
+
+
 def close_on(svc: FinanceService, symbol: str, day: str) -> Decimal | None:
     row = svc.db.one(
         "SELECT close FROM fin_market_prices WHERE symbol = ? AND price_date <= ?"
@@ -71,10 +101,27 @@ def close_on(svc: FinanceService, symbol: str, day: str) -> Decimal | None:
     return Decimal(row["close"]) if row else None
 
 
-def history_start(svc: FinanceService, symbol: str) -> str | None:
+def history_end(svc: FinanceService, symbol: str) -> str | None:
     return svc.db.one(
-        "SELECT MIN(price_date) AS d FROM fin_market_prices WHERE symbol = ?", (symbol,)
+        "SELECT MAX(price_date) AS d FROM fin_market_prices WHERE symbol = ?", (symbol,)
     )["d"]
+
+
+def market_price_freshness(
+    svc: FinanceService, cfg, *, today: str
+) -> list[investments.PriceFreshness]:
+    """Último cierre en EUR de la lista de seguimiento y del índice de referencia."""
+    names = {w.symbol: w.name for w in cfg.watch}
+    names.setdefault(cfg.benchmark, "Índice de referencia")
+    out = []
+    for symbol, name in names.items():
+        last = svc.db.one(
+            "SELECT MAX(price_date) AS d FROM fin_market_prices WHERE symbol = ?"
+            " AND currency = 'EUR' AND price_date <= ?",
+            (symbol, today),
+        )["d"]
+        out.append(investments.price_freshness(symbol, name, last, today))
+    return out
 
 
 # --------------------------------------------------------------------------- señales
@@ -157,22 +204,34 @@ class Budget:
     cap_cents: int  # tope del satélite
     invested_cents: int  # coste de lo que hay en el satélite
     per_trade_cents: int
+    emergency_blocks: bool = True
+    monthly_expense_cents: int = 0
 
     @property
     def free_cash_cents(self) -> int:
-        return self.cash_cents - self.emergency_cents - self.plan_cents
+        """Efectivo que se puede usar: sin el plan del mes y, si bloquea, sin el colchón."""
+        reserve = self.emergency_cents if self.emergency_blocks else 0
+        return self.cash_cents - reserve - self.plan_cents
 
     @property
     def available_cents(self) -> int:
         return max(0, min(self.cap_cents - self.invested_cents, self.free_cash_cents))
+
+    def months_after(self, amount_cents: int) -> float | None:
+        """Meses de gasto que cubriría el efectivo (tras el plan) después de gastar `amount`."""
+        if not self.monthly_expense_cents:
+            return None
+        return (self.cash_cents - self.plan_cents - amount_cents) / self.monthly_expense_cents
 
     @property
     def why_zero(self) -> str | None:
         if self.available_cents > 0:
             return None
         if self.free_cash_cents <= 0:
-            return ("Tu efectivo no cubre el colchón de emergencia más el plan del mes: primero "
-                    "el colchón.")  # fmt: skip
+            if self.emergency_blocks:
+                return ("Tu efectivo no cubre el colchón de emergencia más el plan del mes: primero "
+                        "el colchón.")  # fmt: skip
+            return "No queda efectivo libre tras el plan del mes."
         return "El satélite ya está en su tope."
 
 
@@ -236,6 +295,8 @@ def budget(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int) 
         cap_cents=cap,
         invested_cents=invested,
         per_trade_cents=round(cap * cfg.max_trade / 100),
+        emergency_blocks=cfg.emergency_blocks,
+        monthly_expense_cents=monthly_expense_cents,
     )
 
 
@@ -254,6 +315,15 @@ class Idea:
     stop: Decimal | None = None
     target: Decimal | None = None
     warnings: list[str] = field(default_factory=list)
+    context: list[str] = field(default_factory=list)  # lectura de mercado (ADR 0015)
+    tranches: list[market.Tranche] = field(default_factory=list)
+
+
+def score(s: Signal) -> float:
+    """Puntuación de una oportunidad (más alta = mejor): caída desde máximos, con premio a la
+    tendencia sana y a la sobreventa (RSI bajo). Solo ordena; no cambia las reglas."""
+    rsi_bonus = max(0.0, 50 - (s.rsi14 if s.rsi14 is not None else 50)) / 5
+    return s.drawdown + (10 if s.healthy_trend else -10) + rsi_bonus
 
 
 @dataclass(frozen=True)
@@ -341,7 +411,7 @@ def ideas(
         elif g <= -cfg.stop:
             out.append(Idea("vender", p.isin, p.name, p.symbol, price, f"Pierdes un {-g:.0f} %: stop alcanzado.", p.value_cents))  # fmt: skip
     room = budget_.available_cents
-    for s in sorted(sigs, key=lambda s: -s.drawdown):
+    for s in sorted(sigs, key=lambda s: -score(s)):
         if s.isin in core or s.drawdown < cfg.dip:
             continue
         warn = []
@@ -365,8 +435,19 @@ def ideas(
             if kind == "vigilar":
                 warn.append("Sin presupuesto en el satélite ahora mismo.")
             room -= amount if kind == "comprar" else 0
+            if kind == "comprar" and not cfg.emergency_blocks:
+                months = budget_.months_after(budget_.available_cents - room)  # acumulado
+                if months is not None and months < cfg.emergency_months:
+                    warn.append(
+                        f"Sale de tu colchón: tras esta compra (y las de arriba) te quedarían {months:.1f} meses "
+                        f"de gasto en efectivo (tu objetivo son {cfg.emergency_months:g})."
+                    )
+            # Qué cumple de la regla, sin llamarlo «tendencia» (la vista de tendencia puede decir
+            # «medio bajista» a la vez y parecería una contradicción).
+            base = ("sobre su media de 200 sesiones" if s.sma200 is not None and s.price >= s.sma200
+                    else "bajo su media de 200 sesiones, pero esta sigue subiendo")  # fmt: skip
             out.append(Idea(kind, s.isin, s.name, s.symbol, s.price,
-                            reason + " · tendencia de fondo sana", amount if kind == "comprar" else 0,
+                            reason + " · " + base, amount if kind == "comprar" else 0,
                             stop, target, warn))  # fmt: skip
         else:
             out.append(Idea("vigilar", s.isin, s.name, s.symbol, s.price,
@@ -432,12 +513,26 @@ def versus(svc: FinanceService, cfg, *, today: str) -> Versus | None:
 class Overview:
     today: str
     budget: Budget
-    ideas: list[Idea]
+    ideas: list[Idea]  # ventas primero; después compras/vigilar de mejor a peor puntuación
     signals: list[Signal]
     positions: list[Position]
     taxes: Taxes
     versus: Versus | None
     harvest: list[Position]  # en noviembre y diciembre: pérdidas que compensarían ganancias
+    top_k: int = 3
+    regime: market.Regime | None = None
+    views: dict[str, market.View] = field(default_factory=dict)
+
+    @property
+    def top(self) -> list[Idea]:
+        """Las ventas (siempre) y las `top_k` mejores oportunidades."""
+        sells = [i for i in self.ideas if i.kind == "vender"]
+        rest = [i for i in self.ideas if i.kind != "vender"]
+        return sells + rest[: self.top_k]
+
+    @property
+    def others(self) -> list[Idea]:
+        return [i for i in self.ideas if i.kind != "vender"][self.top_k :]
 
 
 def overview(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int) -> Overview:
@@ -449,4 +544,71 @@ def overview(svc: FinanceService, cfg, *, today: str, monthly_expense_cents: int
     if today[5:7] in ("11", "12") and t.base_cents > 0:
         harvest = [p for p in pos if p.value_cents is not None and p.value_cents < p.cost_cents
                    and p.cost_cents >= MIN_POSITION_CENTS]  # fmt: skip
-    return Overview(today, b, ideas_, sigs, pos, t, versus(svc, cfg, today=today), harvest)
+    order = {"vender": 0, "comprar": 1, "vigilar": 1}
+    ideas_ = sorted(ideas_, key=lambda i: order[i.kind])  # estable: conserva la puntuación
+    reg = market_regime(svc, today=today)
+    views = market_views(svc, cfg, today=today)
+    sig_by = {s.isin: s for s in sigs}
+    ideas_ = [with_market(i, views.get(i.isin), reg, sig_by.get(i.isin)) for i in ideas_]
+    return Overview(
+        today, b, ideas_, sigs, pos, t, versus(svc, cfg, today=today), harvest, cfg.top_k,
+        regime=reg, views=views,
+    )  # fmt: skip
+
+
+def with_market(idea: Idea, view: market.View | None, reg: market.Regime,
+                sig: Signal | None) -> Idea:  # fmt: skip
+    """Añade a una idea su contexto de mercado y los tramos de entrada. No cambia el tipo de
+    idea, el importe, el stop ni el objetivo."""
+    import dataclasses
+
+    if idea.kind == "vender" or view is None:
+        return idea
+    ctx = []
+    if reg.label == "miedo" and sig is not None and sig.healthy_trend:
+        ctx.append("Miedo en el mercado con la tendencia de fondo del valor sana: es el momento "
+                   "que el satélite busca. " + ("La prueba histórica lo respalda."
+                   if market.fear_edge() else "Aun así, la prueba histórica no lo da como "
+                   "ventaja demostrada."))  # fmt: skip
+    elif reg.label == "euforia":
+        ctx.append("Mercado eufórico: prudencia y sin prisa (ningún tramo a precio de hoy). En la "
+                   "prueba histórica entrar en euforia no fue peor que otro día: es cautela, no "
+                   "ventaja.")  # fmt: skip
+    elif reg.label == "desconocido":
+        ctx.append("Sin lectura de mercado ahora mismo (faltan datos).")
+    ctx.append(view.trend.summary)
+    r3 = next((r for r in view.ranges if r.h == 63), None)
+    if r3:
+        ctx.append(r3.text)
+    tr: list[market.Tranche] = []
+    if idea.kind == "comprar":  # «vigilar» dice esperar: sin niveles de compra
+        tr = market.tranches(
+            price=float(idea.price), vals=view.support_window,
+            ranges_=view.ranges, stop=float(idea.stop) if idea.stop is not None else None,
+            regime_label=reg.label, amount_cents=idea.amount_cents,
+        )  # fmt: skip
+        if reg.label == "euforia" and not tr:
+            ctx.append("Sin niveles claros por debajo de hoy y por encima del stop: en euforia, "
+                       "mejor esperar a que baje.")  # fmt: skip
+    return dataclasses.replace(idea, context=ctx, tranches=tr)
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """Qué pasaría con `amount_cents` si se llega al objetivo o al stop, tras comisiones
+    (1 € al comprar y al vender) y el IRPF de la ganancia (19 %, primer tramo)."""
+
+    amount_cents: int
+    gain_cents: int  # neto si llega al objetivo
+    loss_cents: int  # pérdida si salta el stop (positiva)
+
+
+def outcome(idea: Idea, amount_cents: int | None = None) -> Outcome | None:
+    if idea.stop is None or idea.target is None or not idea.price:
+        return None
+    amount = amount_cents or idea.amount_cents or 100000
+    fees = 200
+    gross = round(amount * float(idea.target / idea.price - 1))
+    gain = round((gross - fees) * (1 - TAX_BRACKETS[0][1])) if gross > fees else gross - fees
+    loss = round(amount * float(1 - idea.stop / idea.price)) + fees
+    return Outcome(amount, gain, loss)

@@ -180,7 +180,7 @@ def ideas(sat, now: datetime) -> list[dict]:
         return []
     week = now.strftime("%G-W%V")
     out = []
-    for i in sat.ideas:
+    for i in sat.top:  # solo el top: nada de avisos por cada valor de la lista
         if i.kind == "comprar":
             body = (f"{i.name} cae un {i.reason.split(' ')[0][1:]} desde máximos. Idea: hasta "
                     f"{eur(i.amount_cents, decimals=False)} (stop {i.stop} €). Míralo en el panel.")  # fmt: skip

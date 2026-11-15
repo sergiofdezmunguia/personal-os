@@ -83,7 +83,7 @@ Reglas impuestas por `lint-imports`:
 
 ## Finanzas
 
-- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios) y 0014 (satélite).
+- Uso: `docs/finance.md`. Decisiones: ADR 0006, 0007, 0008 (inversiones), 0010 (open banking), 0011 (analista y avisos), 0012 (precios diarios), 0014 (satélite) y 0015 (lectura de mercado).
 - Importar = parser puro (`finance/importers/`) + `FinanceService.import_statement`. Un parser
   nuevo valida coherencia (saldo encadenado) y falla antes que importar datos dudosos.
 - Nunca guardar IBAN completo, titular, números de tarjeta ni teléfonos (`mask_identifiers`).
@@ -101,10 +101,13 @@ Reglas impuestas por `lint-imports`:
   `ops/notices.py` → `panel/avisos.json` → notificaciones con `Personal OS Avisos.js`.
 - Satélite (ADR 0014): `finance/satellite.py`, reglas en `[finance.satellite]`, pestaña Ideas,
   MCP `satellite_overview`, skill `satellite-review`. Ideas, nunca órdenes ni promesas.
+  Lectura de mercado (ADR 0015): `finance/market.py` (régimen, tendencia, rangos, tramos; puro)
+  y `finance/market_backtest.py` + `scripts/market_backtest.py` (prueba con datos públicos,
+  resultado en `market.EVIDENCE`). Umbrales fijados a priori: no ajustarlos a los datos.
 - Inversiones (`finance/investments.py`): CSV de TR con id por movimiento (enlaza lo ya
   importado sin duplicar), PDF de patrimonio = valoración de cierre de mes; precio diario por ISIN
   de fuentes públicas (ADR 0012, `adapters/quotes.py`, `fin_prices`): solo se envía el ISIN.
-- Panel v2 con pestañas Hoy · Dinero · Cartera · Hábitos (`ops/panel_tabs.py`); hábitos de
+- Panel v2 con pestañas Hoy · Dinero · Cartera · Ideas (`ops/panel_tabs.py`; sin pestaña Hábitos: los lleva en Fitia y Salud); tarjeta «Ayer en Salud» en Hoy con datos
   Apple Salud por fichero (`habits/health.py`, ADR 0013); la agenda la inyecta el visor.
 - Panel «Pulso del mes» (ADR 0009): cálculo en `finance/insights.py`, HTML en `ops/panel.py`
   (legible sin JS, sin recursos externos), se regenera tras `pos sync` y con `pos panel`.

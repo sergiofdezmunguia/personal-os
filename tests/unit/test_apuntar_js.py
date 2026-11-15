@@ -71,11 +71,23 @@ const src = require("fs").readFileSync(process.argv[1], "utf8");
 const saved = []; let output = null, alerts = 0;
 const input = JSON.parse(process.argv[2]);
 let clip = input.clipboard || "";
+const NOW = new Date(2026, 10, 2, 22, 0);  // lunes 2 de noviembre de 2026: tests sin fecha real
+const RealDate = Date;
+class FakeDate extends RealDate { constructor(...a) { super(...(a.length ? a : [NOW.getTime()])); } static now() { return NOW.getTime(); } }
 const g = {
+  Date: FakeDate,
   args: input.args,
   config: { runsInApp: false, runsWithSiri: false, runsInActionExtension: false },
   Script: { setShortcutOutput: (v) => { output = v; }, complete: () => {} },
-  CalendarEvent: class { save() { saved.push(this.title); } },
+  CalendarEvent: class {
+    save() { saved.push(this.title); }
+    // Sin `events` en la entrada, como antes: `between` no existe y se recorre la rama de fallo.
+    static between(from, to) {
+      if (!input.events) throw new Error("sin permiso");
+      return input.events.map(([title, s, e, allDay]) => ({ title, startDate: new RealDate(s), endDate: new RealDate(e), isAllDay: !!allDay }))
+        .filter((ev) => ev.startDate < to && from < ev.endDate);
+    }
+  },
   Calendar: {}, Alert: class { constructor() { alerts++; } },
   Pasteboard: { pasteString: () => clip, copyString: (v) => { clip = v; } },
   FileManager: { local: () => ({ readString: () => "" }) },
@@ -86,9 +98,12 @@ new (Object.getPrototypeOf(async function () {}).constructor)(...Object.keys(g),
 """
 
 
-def run_shortcut(args: dict, clipboard: str = "") -> dict:
+def run_shortcut(args: dict, clipboard: str = "", events: list | None = None) -> dict:
+    payload = {"args": args, "clipboard": clipboard}
+    if events is not None:
+        payload["events"] = events
     out = subprocess.run(
-        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), json.dumps({"args": args, "clipboard": clipboard})],
+        [NODE, "-e", SHORTCUT_SIM, str(SCRIPT), json.dumps(payload)],
         capture_output=True,
         text=True,
         check=True,
@@ -314,3 +329,59 @@ def test_reminder_by_voice():
     got = act("recuérdame llamar a mamá")  # sin fecha: recordatorio sin vencimiento
     assert got["log"] == [["reminder", "Llamar a mamá", None, False]]
     assert got["output"] == "Te lo recordaré: Llamar a mamá"
+
+
+# ------------------------------------------------------------------ solapes (versión 12)
+# Fecha fija del simulador: lunes 2-nov-2026. «el martes 3 a las 12:30» → 12:30–13:30 (médico).
+MEDICO = {"plainTexts": ["tengo médico el martes 3 a las 12:30"]}
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+@pytest.mark.parametrize(
+    "events, warns",
+    [
+        ([["🍽️ Comida con Ana", "2026-11-03T12:00:00", "2026-11-03T13:00:00"]], True),
+        ([["Reunión", "2026-11-03T11:30:00", "2026-11-03T12:30:00"]], False),  # termina justo
+        ([["Reunión", "2026-11-03T13:30:00", "2026-11-03T14:00:00"]], False),  # empieza justo
+        ([["🎂 Cumple", "2026-11-03T00:00:00", "2026-11-03T23:59:59", True]], False),
+        ([["🎂 Cumple", "2026-11-03T00:00:00", "2026-11-04T00:00:00", True]], False),
+        ([], False),
+    ],
+)
+def test_shortcut_warns_only_on_real_overlaps(events, warns):
+    got = run_shortcut(MEDICO, events=events)
+    assert got["saved"] == ["🩺 Médico"] and got["alerts"] == 0
+    assert got["output"].startswith("Apuntado: 🩺 Médico")
+    assert ("se solapa con" in got["output"]) is warns
+    assert ("Para quitarlo: «cancela Médico del martes 3»" in got["output"]) is warns
+    assert "No he podido comprobar" not in got["output"]
+    if warns:
+        assert "Comida con Ana (12:00–13:00)" in got["output"]  # sin emoji: Siri lo lee bien
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_shortcut_overlap_lists_three_and_counts_the_rest():
+    events = [[f"Cita {i}", "2026-11-03T12:00:00", "2026-11-03T14:00:00"] for i in range(5)]
+    out = run_shortcut(MEDICO, events=events)["output"]
+    assert "Cita 0" in out and "Cita 2" in out and "Cita 3" not in out and "y 2 más" in out
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_shortcut_overlap_across_midnight():
+    events = [["Fiesta", "2026-11-03T23:00:00", "2026-11-04T03:00:00"]]
+    got = run_shortcut({"plainTexts": ["cine el miércoles 4 a las 0:30"]}, events=events)
+    assert "se solapa con Fiesta" in got["output"]
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_shortcut_saves_even_if_calendar_cannot_be_read():
+    got = run_shortcut(MEDICO)  # sin `events`: `between` falla
+    assert got["saved"] == ["🩺 Médico"]
+    assert got["output"].endswith("No he podido comprobar si se solapa.")
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js no disponible")
+def test_all_day_event_is_not_checked():
+    events = [["Reunión", "2026-11-03T09:00:00", "2026-11-03T18:00:00"]]
+    got = run_shortcut({"plainTexts": ["el martes 3 festivo"]}, events=events)
+    assert got["saved"] and "solapa" not in got["output"]

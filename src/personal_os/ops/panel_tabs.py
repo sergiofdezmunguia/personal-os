@@ -1,4 +1,5 @@
-"""Panel v2 (ADR 0009, revisado): pestañas Hoy · Dinero · Cartera · Hábitos.
+"""Panel v2 (ADR 0009, revisado): pestañas Hoy · Dinero · Cartera · Ideas. Los hábitos los
+llevan Fitia y Salud; del fichero de Salud solo queda la tarjeta «Ayer en Salud» de Hoy.
 
 «Dinero» es el análisis de siempre (`panel.py`). Este módulo añade las otras pestañas y los
 datos extra que necesitan. Igual que el resto del panel: HTML generado en el PC, legible sin
@@ -14,7 +15,7 @@ import html
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from personal_os.finance import analyst, investments, satellite
+from personal_os.finance import analyst, backtest, investments, market, satellite
 from personal_os.finance.insights import Panel
 from personal_os.habits import health
 
@@ -53,6 +54,7 @@ class Extras:
     habits: health.Summary | None = None
     habits_file: bool = False
     satellite: satellite.Overview | None = None
+    backtest: backtest.Result | None = None
 
 
 def build_extras(
@@ -63,6 +65,7 @@ def build_extras(
     alerts: list[dict],
     health_text: str | None,
     sat: satellite.Overview | None = None,
+    test: backtest.Result | None = None,
 ) -> Extras:
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
     summary = None
@@ -78,6 +81,7 @@ def build_extras(
         habits=summary,
         habits_file=health_text is not None,
         satellite=sat,
+        backtest=test,
     )
 
 
@@ -263,41 +267,6 @@ def _habit_tiles(day: health.Day, s: health.Summary) -> str:
     return f'<div class="habs">{"".join(tiles)}</div>'
 
 
-def tab_habits(x: Extras) -> str:
-    s = x.habits
-    if not x.habits_file or s is None:
-        body = """<div class="panel"><p>Aún no llegan datos de Salud.</p>
-          <p class="muted small">Crea el atajo «Salud del día» (pasos, minutos de ejercicio, horas de sueño y kcal de Fitia) que añade cada noche una línea a <b>iCloud Drive › PersonalOS-extractos › salud › salud.txt</b>. Los pasos están en <code>docs/setup/iphone.md</code>.</p></div>"""
-        return f'<section class="view" id="v-habitos" aria-label="Hábitos"><h2>Hábitos</h2>{body}</section>'
-    steps = [d.get("pasos") for d in s.days]
-    top = max((v for v in steps if v), default=1)
-    cells = []
-    first = date.fromisoformat(s.days[0].day)
-    cells += ['<div class="d pad"></div>'] * first.weekday()
-    for d in s.days:
-        v = d.get("pasos")
-        lvl = 0 if v is None else min(4, 1 + int(3.999 * v / top))
-        met = " met" if d.met("pasos") else ""
-        tip = f"{short_day(d.day)}|Pasos: {_fmt('pasos', v)}|Ejercicio: {_fmt('ejercicio', d.get('ejercicio'))}|Sueño: {_fmt('sueno', d.get('sueno'))}"
-        cells.append(
-            f'<div class="d l{lvl}{met}" data-tip="{esc(tip)}" tabindex="0"><span class="n">{date.fromisoformat(d.day).day}</span></div>'
-        )
-    dow = "".join(f'<div class="dow">{x}</div>' for x in DOW)
-    avgs = "".join(
-        f'<div class="fact"><div class="k">{LABELS[k]}</div><div class="v">{_fmt(k, s.averages.get(k))}</div><div class="n">media 28 días</div></div>'
-        for k in ("pasos", "ejercicio", "sueno", "kcal")
-        if k in s.averages
-    )
-    last = next((d for d in reversed(s.days) if d.values), None)
-    tiles = _habit_tiles(last, s) if last else ""
-    return f"""<section class="view" id="v-habitos" aria-label="Hábitos"><h2>Hábitos</h2>
-      <div class="panel"><h3>{"Último día: " + short_day(last.day) if last else "Sin datos recientes"}</h3>{tiles}</div>
-      <div class="panel"><div class="row-between"><h3>Pasos · 4 semanas</h3><span class="muted small0">✓ = objetivo de {_fmt("pasos", health.GOALS["pasos"])}</span></div>
-        <div class="cal">{dow}{"".join(cells)}</div></div>
-      <div class="panel"><div class="facts">{avgs}</div></div>
-    </section>"""
-
-
 # --------------------------------------------------------------------------- Ideas (satélite)
 
 KIND = {"comprar": ("good", "Comprar"), "vender": ("warn", "Vender"), "vigilar": ("", "Vigilar")}
@@ -322,9 +291,10 @@ def tab_ideas(x: Extras) -> str:
         <div class="fact"><div class="k">Tope del satélite</div><div class="v">{eur(b.cap_cents)}</div><div class="n">invertido {eur(b.invested_cents)}</div></div>
         <div class="fact"><div class="k">Efectivo libre</div><div class="v">{eur(b.free_cash_cents)}</div><div class="n">tras colchón {eur(b.emergency_cents)} y plan {eur(b.plan_cents)}</div></div>
       </div>{why}</div>"""]  # fmt: skip
+    if o.regime is not None:
+        parts.append(_regime_card(o.regime))
     cards = []
-    order = {"vender": 0, "comprar": 1, "vigilar": 2}
-    for i in sorted(o.ideas, key=lambda i: order[i.kind]):
+    for n, i in enumerate(o.top, 1):
         cls, label = KIND[i.kind]
         amount = (
             f'<div class="big-line"><b>{eur(i.amount_cents)}</b> propuestos</div>'
@@ -334,7 +304,24 @@ def tab_ideas(x: Extras) -> str:
         levels = (f'<p class="muted small0">Stop {_price(i.stop)} · objetivo {_price(i.target)}</p>'
                   if i.stop and i.kind != "vender" else "")  # fmt: skip
         warns = "".join(f'<p class="small0 warnline">⚠ {esc(w)}</p>' for w in i.warnings)
-        cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{esc(i.name)}</h3>
+        out = satellite.outcome(i) if i.kind != "vender" else None
+        if out:
+            per = "" if i.amount_cents else f" (por cada {eur(out.amount_cents)})"
+            levels += (f'<p class="small0">Si llega al objetivo: <b class="up-good">{eur(out.gain_cents, sign=True)}</b> netos'
+                       f' · si salta el stop: <b class="down-bad">{eur(-out.loss_cents)}</b>{per}</p>')  # fmt: skip
+        ctx = "".join(f'<p class="muted small0">{esc(c)}</p>' for c in i.context)
+        if len(i.tranches) >= 2:
+            rows = "".join(
+                f"<li>{_price(t.price)} {esc(t.label)}"
+                + (f" · <b>{eur(t.amount_cents)}</b>" if t.amount_cents else "")
+                + "</li>"
+                for t in i.tranches
+            )
+            ctx += (f'<p class="small0">Si quieres entrar por tramos (mismo importe, repartido):</p>'
+                    f'<ol class="small0">{rows}</ol>')  # fmt: skip
+        levels += ctx
+        rank = f"{n}. " if i.kind != "vender" else ""
+        cards.append(f"""<div class="panel idea"><div class="row-between"><h3>{rank}{esc(i.name)}</h3>
           <span class="pill {cls}">{label}</span></div>
           <p class="hero-of">{_price(i.price)} · {esc(i.reason)}</p>{amount}{levels}{warns}</div>""")  # fmt: skip
     if not cards:
@@ -342,14 +329,24 @@ def tab_ideas(x: Extras) -> str:
             '<div class="panel"><p class="muted">Nada cumple las reglas hoy. Lo normal: la mayoría de los días no hay que hacer nada.</p></div>'
         )
     parts += cards
+    if o.others:
+        more = "".join(
+            f'<div class="li"><span>{esc(i.name)}<small>{esc(i.reason)}</small></span>'
+            f'<span class="num">{KIND[i.kind][1]}</span></div>'
+            for i in o.others
+        )
+        parts.append(
+            f'<div class="panel"><details><summary>Otras {len(o.others)} con caída (fuera del top {o.top_k})</summary><div class="list">{more}</div></details></div>'
+        )
     rows = "".join(
         f'<div class="li"><span>{esc(s.name)}<small>RSI {f"{s.rsi14:.0f}" if s.rsi14 is not None else "—"} · '
-        f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200</small></span>"
+        f"{'sobre' if s.sma200 and s.price >= s.sma200 else 'bajo'} su media de 200"
+        f"{_watch_extra(o.views.get(s.isin), s)}</small></span>"
         f'<span class="num">−{s.drawdown:.0f} %</span></div>'
         for s in sorted(o.signals, key=lambda s: -s.drawdown)
     )
     parts.append(
-        f'<div class="panel"><h3>Lista de seguimiento · caída desde máximos</h3><div class="list">{rows}</div></div>'
+        f'<div class="panel"><details><summary>Toda la lista de seguimiento · caída desde máximos</summary><div class="list">{rows}</div></details></div>'
     )
     t = o.taxes
     harvest = "".join(
@@ -365,10 +362,56 @@ def tab_ideas(x: Extras) -> str:
         cls = "good" if v.diff_cents >= 0 else "warn"
         parts.append(f"""<div class="panel"><div class="row-between"><h3>¿Le gana al índice?</h3><span class="pill {cls}">{eur(v.diff_cents, sign=True)}</span></div>
           <p class="hero-of">Desde {short_day(v.since)}: el satélite vale {eur(v.satellite_cents)}; lo mismo en el MSCI World valdría {eur(v.benchmark_cents)}.</p></div>""")  # fmt: skip
+    if x.backtest is not None and x.backtest.trades:
+        r = x.backtest
+        bench = r.bench_pnl_cents
+        vs = (
+            f" · el mismo dinero en el MSCI World: {eur(bench, sign=True)}"
+            if bench is not None
+            else ""
+        )
+        avg = f"{r.avg_pct:+.1f}".replace(".", ",") if r.avg_pct is not None else "—"
+        parts.append(f"""<div class="panel"><h3>Prueba histórica de tus reglas (5 años)</h3>
+          <div class="facts">
+            <div class="fact"><div class="k">Operaciones</div><div class="v">{len(r.trades)}</div><div class="n">{len(r.closed)} cerradas · {round(r.avg_days or 0)} sesiones de media</div></div>
+            <div class="fact"><div class="k">Aciertos</div><div class="v">{round(r.win_rate or 0)} %</div><div class="n">media {avg} % por operación</div></div>
+          </div>
+          <p class="hero-of">Con {eur(r.trade_cents)} por operación: {eur(r.pnl_cents, sign=True)} ({eur(r.net_cents, sign=True)} tras IRPF){vs}.</p>
+          <p class="small0 warnline">⚠ Ojo: la lista son empresas que hoy sabemos que fueron ganadoras. Con las mismas reglas sobre grandes valores a los que les fue mal (Intel, PayPal, Nike, Bayer…) se acierta 1 de cada 3 y se pierde dinero. La ventaja está en elegir bien qué comprar, no en la caída.</p></div>""")  # fmt: skip
     parts.append(
-        '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. Las órdenes las das tú en Trade Republic.</p>'
+        '<p class="muted small">Ideas por reglas fijas (config.toml), no recomendaciones de inversión. La lectura de mercado y los rangos salen de la historia: son probabilidades, no predicciones. Las órdenes las das tú en Trade Republic.</p>'
     )
     return f'<section class="view" id="v-ideas" aria-label="Ideas"><h2>Ideas</h2>{"".join(parts)}</section>'
+
+
+REGIME = {"miedo": ("warn", "Miedo"), "euforia": ("warn", "Euforia"), "neutral": ("", "Neutral"),
+          "desconocido": ("", "Sin datos")}  # fmt: skip
+
+
+def _regime_card(r: market.Regime) -> str:
+    cls, label = REGIME[r.label]
+    comps = "".join(
+        f'<div class="li"><span>{esc(c.label)}<small>{esc(c.text)}</small></span>'
+        f'<span class="num">{"miedo" if c.vote < 0 else "euforia" if c.vote > 0 else "—"}</span></div>'
+        for c in r.components
+    )
+    ev = "".join(f'<p class="small0">{esc(line)}</p>' for line in market.evidence_lines())
+    edge = ("" if market.fear_edge() else
+            '<p class="small0 warnline">⚠ Leer el miedo no ha servido para entrar mejor: es contexto, no una señal con ventaja.</p>')  # fmt: skip
+    return f"""<div class="panel"><div class="row-between"><h3>Cómo está el mercado</h3><span class="pill {cls}">{label}</span></div>
+      <p class="hero-of">{esc(r.summary)}</p>{edge}
+      <details><summary>Los indicadores</summary><div class="list">{comps}</div></details>
+      <details><summary>¿Sirve para entrar mejor? Lo que dice la historia</summary>{ev}</details></div>"""  # fmt: skip
+
+
+def _watch_extra(v: market.View | None, s: satellite.Signal) -> str:
+    if v is None:
+        return ""
+    t = v.trend
+    out = f" · largo {t.long}" if t.long else ""
+    if v.entry_from is not None and float(s.price) > v.entry_from:
+        out += f" · la regla se activaría bajo {_price(v.entry_from)}"
+    return out
 
 
 # --------------------------------------------------------------------------- estilos y JS
@@ -378,7 +421,7 @@ CSS = """
 html.js .view{display:none}html.js .view.on{display:grid;gap:14px}
 html.js .tabs{display:block;position:fixed;left:0;right:0;bottom:0;z-index:20;background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-top:1px solid var(--ring);padding:6px max(8px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(8px,env(safe-area-inset-left,0px))}
 .tabs nav{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
-.warnline{color:var(--warn-ink);margin:4px 0 0}.idea .hero-of{margin-top:4px}
+.warnline{color:var(--warn-ink);margin:4px 0 0}.up-good{color:var(--good-ink)}.down-bad{color:var(--warn-ink)}.idea .hero-of{margin-top:4px}
 .tabs button{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;color:var(--muted);background:none;border:0;font:500 11.5px var(--ui);cursor:pointer}
 .tabs button span.i{font-size:20px;line-height:1}
 .tabs button[aria-current="page"]{color:var(--s1)}
@@ -449,5 +492,4 @@ TABS = """<div class="tabs" role="navigation" aria-label="Secciones"><nav>
 <button type="button" data-view="v-dinero"><span class="i" aria-hidden="true">💶</span>Dinero</button>
 <button type="button" data-view="v-cartera"><span class="i" aria-hidden="true">📈</span>Cartera</button>
 <button type="button" data-view="v-ideas"><span class="i" aria-hidden="true">💡</span>Ideas</button>
-<button type="button" data-view="v-habitos"><span class="i" aria-hidden="true">🏃</span>Hábitos</button>
 </nav></div>"""

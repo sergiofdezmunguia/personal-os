@@ -167,6 +167,8 @@ def test_pos_panel_command(app, svc, monkeypatch):
     assert target.read_text(encoding="utf-8").startswith("<!doctype") and opened == [target]
     assert CliRunner().invoke(cli, ["panel", "--no-open"]).exit_code == 0 and len(opened) == 1
     data = json.loads((target.parent / "widget.json").read_text(encoding="utf-8"))
+    # El widget parsea este formato para su sello de fecha (personal-os-widget.js, dataStamp).
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2}", data["generated_at"])
     assert data["version"] == 1 and len(data["month"]) == 7  # la CLI usa el reloj real
     assert data["variable_cents"] >= 0 and data["net_worth_cents"] == sum(
         h["cents"] for h in data["holdings"]
@@ -192,19 +194,20 @@ def test_v2_tabs_and_extras(svc):
         {"title": "📈 Sube una cuota", "body": "Streaming inventado sube.", "kind": "alerta"}
     ], health_text=log)  # fmt: skip
     page = panel.render(p, generated_at="05/10/2026 09:00", extras=x)
-    for view in ("v-hoy", "v-dinero", "v-cartera", "v-habitos"):
+    for view in ("v-hoy", "v-dinero", "v-cartera", "v-ideas"):
         assert f'id="{view}"' in page and f'data-view="{view}"' in page
+    assert "v-habitos" not in page  # los hábitos los llevan Fitia y Salud
     assert 'id="agenda"' in page and "window.posAgenda" in page
     assert "Streaming inventado sube." in page
     assert "Cobros recurrentes" in page  # streaming mensual de los datos inventados
     assert "9.000" in page  # pasos del día anterior
 
 
-def test_v2_without_health_explains_setup(svc):
+def test_v2_without_health_shows_no_health_card(svc):
     from personal_os.ops import panel_tabs
 
     _months(svc)
     p = insights.build(svc, today=TODAY)
     page = panel.render(p, generated_at="x", extras=panel_tabs.build_extras(
         svc, p, today=TODAY, alerts=[], health_text=None))  # fmt: skip
-    assert "Aún no llegan datos de Salud" in page
+    assert "Ayer en Salud" not in page and "Aún no llegan datos de Salud" not in page

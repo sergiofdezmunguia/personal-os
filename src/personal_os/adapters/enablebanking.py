@@ -37,6 +37,23 @@ class BankSession:
     accounts: tuple[str, ...]
 
 
+def load_sessions(cred_dir: Path) -> list[BankSession]:
+    """Sesiones de `sessions.json`, sin red y sin cargar la clave privada."""
+    path = cred_dir / "sessions.json"
+    if not path.exists():
+        return []
+    raw = json.loads(path.read_text())
+    return [
+        BankSession(
+            alias=alias,
+            session_id=s["session_id"],
+            valid_until=s.get("valid_until", ""),
+            accounts=tuple(s.get("accounts", [])),
+        )
+        for alias, s in sorted(raw.items())
+    ]
+
+
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -59,18 +76,7 @@ class EnableBankingClient:
         return self.cred_dir / "sessions.json"
 
     def sessions(self) -> list[BankSession]:
-        if not self.sessions_path.exists():
-            return []
-        raw = json.loads(self.sessions_path.read_text())
-        return [
-            BankSession(
-                alias=alias,
-                session_id=s["session_id"],
-                valid_until=s.get("valid_until", ""),
-                accounts=tuple(s.get("accounts", [])),
-            )
-            for alias, s in sorted(raw.items())
-        ]
+        return load_sessions(self.cred_dir)
 
     # --- HTTP -------------------------------------------------------------------------
     def _jwt(self) -> str:

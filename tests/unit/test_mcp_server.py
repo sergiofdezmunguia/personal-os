@@ -123,3 +123,52 @@ def test_sync_apple_reaches_the_iphone(server, device):
     occ_id = call(server, "list_tasks")["tasks"][0]["open_occurrence_id"]
     assert device.by_marker(occ_id)["title"] == "Desde Claude"
     assert created["title"] == "Desde Claude"
+
+
+def test_default_dates_follow_the_app_clock_not_the_system(server):
+    # El reloj fijo dice lunes 5-oct-2026: «hoy» y el mes por defecto salen de él.
+    assert call(server, "list_tasks")["today"] == "2026-10-05"
+    assert call(server, "list_calendar_events")["today"] == "2026-10-05"
+    assert call(server, "finance_summary")["month"] == "2026-10"
+
+
+def test_satellite_overview_includes_market_reading(clock):
+    """Lista inventada y precios sintéticos: el MCP da régimen, vistas y tramos en JSON."""
+    from datetime import date, timedelta
+    from decimal import Decimal
+
+    from personal_os.finance import market, satellite
+
+    path = write_config_template()
+    path.write_text('timezone = "Atlantic/Canary"\n[[finance.satellite.watch]]\n'
+                    'isin = "XF000FAKE009"\nsymbol = "FAKE9.DE"\nname = "FAKE Nine"\n')  # fmt: skip
+    app = bootstrap.open_app(clock=clock)
+    svc = bootstrap.finance_service(app)
+    end = date(2026, 10, 5)
+    days = [(end - timedelta(days=599 - i)).isoformat() for i in range(600)]
+    up = [(d, Decimal(str(round(50 + 50 * i / 599, 2)))) for i, d in enumerate(days)]
+    satellite.store_history(svc, "FAKE9.DE", "EUR", up, fetched_at="x")
+    satellite.store_history(svc, market.INDEX, "USD", up, fetched_at="x")
+    satellite.store_history(svc, market.VIX, "USD", [(days[-1], Decimal(12))], fetched_at="x")
+    satellite.store_history(svc, market.VIX3M, "USD", [(days[-1], Decimal(15))], fetched_at="x")
+    app.db.close()
+    apps = []
+
+    def open_app():
+        a = bootstrap.open_app(clock=clock)
+        apps.append(a)
+        return a
+
+    try:
+        out = call(build_server(open_app), "satellite_overview")
+    finally:
+        for a in apps:
+            a.db.close()
+    m = out["market"]
+    assert m["regime"] == "euforia" and m["evidence"]["fear_edge"] is False
+    assert len(m["components"]) == 6 and m["missing"] == [
+        "Amplitud (valores sobre su media de 200)"
+    ]
+    v = out["views"]["XF000FAKE009"]
+    assert v["trend"]["long"] == "alcista" and v["entry_from"] == 85.0
+    assert "no recomendaciones" in out["disclaimer"]

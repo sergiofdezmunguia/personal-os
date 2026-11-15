@@ -25,6 +25,9 @@ saldo contable (`CLBD` / `OTHR`).
 - **Saldo**: se reconstruye hacia atrás desde el saldo contable. Se contrasta con el saldo
   diario ya importado: diferencia constante ⇒ se acepta con aviso (el historial importado
   partía de otro saldo) y manda el banco; diferencia variable ⇒ se rechaza todo.
+  Excepción (2026-11): si todos los movimientos traen id real y 5 o más días ya importados
+  por id difieren en la misma cantidad, es el saldo del banco el que va atrasado respecto a su
+  propia lista (Santander, cargo del 6-nov): se ancla al saldo importado y se avisa.
 - **Sin id del banco** ⇒ id provisional `prov:<hash(fecha, importe, ordinal)>`. Un movimiento
   provisional no se duplica si ya hay uno de cualquier fuente con el mismo importe a ±3 días
   (primero el mismo día). Un id real posterior (CSV de TR) adopta al provisional.
